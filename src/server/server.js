@@ -329,7 +329,7 @@ class DashboardServer {
     }
   }
 
-  start(options = {}) {
+  async start(options = {}) {
     const skipHistory = options.skipHistory || false;
     const pollMs = options.pollMs || 500;
     const activeWindow = options.activeWindow || 5 * 60 * 1000;
@@ -342,34 +342,11 @@ class DashboardServer {
       maxSessions,
     };
 
-    const doListen = () => {
-      this.server.listen(this.port, this.host, () => {
-        const url = `http://localhost:${this.port}`;
-        console.log(`\n  claude-watch web server`);
-        console.log(`  ───────────────────────────`);
-        console.log(`  Local:   ${url}`);
-        console.log(`  Network: http://${this.host}:${this.port}`);
-        console.log(`  Quit:    Ctrl+C\n`);
-      });
-
-      this.server.on('error', async (err) => {
-        if (err.code === 'EADDRINUSE') {
-          console.log(`Port ${this.port} is in use, killing existing process...`);
-          const killed = await this.killExistingPort(this.port);
-          if (killed) {
-            console.log(`Existing process killed, restarting...`);
-            this.server.close();
-            doListen();
-          } else {
-            console.error(`Failed to free port ${this.port}, exiting.`);
-            process.exit(1);
-          }
-        } else {
-          console.error(`Server error: ${err.message}`);
-          process.exit(1);
-        }
-      });
-    };
+    // Proactively kill any process occupying the port before starting
+    const killed = await this.killExistingPort(this.port);
+    if (killed) {
+      console.log(`Previous instance on port ${this.port} killed, restarting...`);
+    }
 
     this.server = http.createServer((req, res) => {
       this.handleHTTP(req, res).catch(() => {
@@ -382,6 +359,17 @@ class DashboardServer {
 
     this.wss = new WebSocketServer({ server: this.server });
     this.wss.on('connection', (ws) => this.onWsConnection(ws));
+
+    // Register error handler once (not inside doListen to avoid accumulation)
+    this.server.on('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        console.error(`Port ${this.port} is still in use after attempting to free it. Exiting.`);
+        process.exit(1);
+      } else {
+        console.error(`Server error: ${err.message}`);
+        process.exit(1);
+      }
+    });
 
     const w = this.setupWatcher(watcherOpts);
 
@@ -404,7 +392,14 @@ class DashboardServer {
       process.exit(1);
     });
 
-    doListen();
+    this.server.listen(this.port, this.host, () => {
+      const url = `http://localhost:${this.port}`;
+      console.log(`\n  claude-watch web server`);
+      console.log(`  ───────────────────────────`);
+      console.log(`  Local:   ${url}`);
+      console.log(`  Network: http://${this.host}:${this.port}`);
+      console.log(`  Quit:    Ctrl+C\n`);
+    });
 
     return { server: this.server, watcher: w };
   }
@@ -417,7 +412,7 @@ class DashboardServer {
   }
 }
 
-function startServer(options = {}) {
+async function startServer(options = {}) {
   const ds = new DashboardServer(options);
   return ds.start(options);
 }
