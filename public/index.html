@@ -1,0 +1,1206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>claude-watch</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #111827;
+  --bg2: #1f2937;
+  --bg3: #374151;
+  --border: #4b5563;
+  --text: #d1d5db;
+  --dim: #6b7280;
+  --white: #f9fafb;
+  --purple: #7c3aed;
+  --purple2: #5b21b6;
+  --blue: #3b82f6;
+  --magenta: #c084fc;
+  --yellow: #fbbf24;
+  --yellow2: #92400e;
+  --green: #34d399;
+  --cyan: #22d3ee;
+  --red: #f87171;
+  --red2: #dc2626;
+  --gray: #9ca3af;
+  --orange: #fb923c;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'SF Mono', 'Menlo', 'Monaco', 'Consolas', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Header ── */
+#header {
+  height: 32px;
+  background: var(--bg3);
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--white);
+  flex-shrink: 0;
+  user-select: none;
+}
+#header .sep { color: var(--dim); margin: 0 4px; }
+#header .auto { margin-left: auto; display: flex; gap: 4px; align-items: center; }
+
+.btn {
+  position: relative;
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 2px 8px; border-radius: 4px; border: 1px solid var(--border);
+  background: var(--bg2); color: var(--text); cursor: pointer;
+  font-family: inherit; font-size: 11px; line-height: 1.5;
+  white-space: nowrap; user-select: none; transition: all 0.15s;
+}
+.btn[data-tooltip]:hover::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 5px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg2); color: var(--white);
+  padding: 2px 8px; border-radius: 4px;
+  font-size: 10px; white-space: nowrap; z-index: 9999;
+  pointer-events: none; border: 1px solid var(--border);
+  font-family: inherit; line-height: 1.4;
+}
+.btn:hover { background: var(--bg3); border-color: var(--dim); }
+.btn.on { background: var(--purple); border-color: var(--purple); color: var(--white); }
+.btn.on:hover { background: var(--purple2); }
+.btn.on:hover::after { background: var(--purple2); }
+.btn.danger { border-color: var(--red2); color: var(--red); }
+.btn.danger:hover { background: var(--red2); color: var(--white); }
+.btn.accent { border-color: var(--yellow2); color: var(--yellow); }
+.btn:disabled { opacity: 0.3; cursor: not-allowed; }
+.btn-icon { padding: 2px 6px; min-width: 28px; justify-content: center; }
+
+/* ── Main area ── */
+#main {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ── Tree panel ── */
+#tree-panel {
+  width: 30%; min-width: 180px; max-width: 60%;
+  border-right: 1px solid var(--border);
+  background: var(--bg2);
+  overflow: hidden;
+  display: flex; flex-direction: column;
+  flex-shrink: 0;
+  position: relative;
+}
+#tree-panel.hidden { display: none; }
+
+#tree-resize-handle {
+  position: absolute; right: -3px; top: 0; bottom: 0;
+  width: 6px; cursor: col-resize; z-index: 10;
+}
+#tree-resize-handle:hover, #tree-resize-handle.active { background: var(--purple); }
+
+#tree-toolbar {
+  display: flex; gap: 4px; padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0; flex-wrap: wrap;
+}
+#tree-content {
+  flex: 1; overflow-y: auto; overflow-x: hidden; padding: 4px 0;
+}
+
+/* ── Tree node styles ── */
+.tree-row {
+  display: flex; align-items: center;
+}
+.tree-node {
+  flex: 1; display: flex; align-items: center;
+  padding: 3px 2px 3px 0;
+  cursor: pointer; white-space: nowrap; gap: 4px;
+  min-width: 0; overflow: hidden;
+}
+.tree-node:hover { background: rgba(255,255,255,0.05); }
+.tree-node.selected { background: rgba(124,58,237,0.3); }
+.tree-node.dim { opacity: 0.4; }
+.tree-prefix { color: var(--dim); font-size: 12px; flex-shrink: 0; letter-spacing: 0; font-family: monospace; }
+.tree-node .ctx-pct { font-size: 10px; margin-left: 4px; flex-shrink: 0; }
+.tree-node .ctx-pct.warn { color: var(--yellow); }
+.tree-node .ctx-pct.danger { color: var(--red); }
+.tree-node .active-dot { flex-shrink: 0; }
+.tree-node .active-dot.on { color: var(--green); text-shadow: 0 0 6px var(--green); }
+.tree-node .active-dot.off { color: #555; opacity: 1; }
+
+.tree-actions { display: none; gap: 2px; padding-right: 4px; }
+.tree-row:hover .tree-actions { display: flex; }
+.tree-row.selected>.tree-actions { display: flex; }
+
+/* ── Stream panel ── */
+#stream-panel-wrap {
+  flex: 1; display: flex; flex-direction: column; overflow: hidden;
+}
+#stream-toolbar {
+  display: flex; gap: 4px; padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg); flex-shrink: 0;
+}
+#stream-panel {
+  flex: 1; overflow-y: auto; padding: 8px 12px;
+  font-size: 12px;
+}
+
+/* ── Stream lines ── */
+.stream-line { white-space: pre-wrap; word-break: break-all; }
+.stream-line.thinking { color: var(--magenta); }
+.stream-line.tool-input { color: var(--yellow); }
+.stream-line.tool-output { color: var(--green); }
+.stream-line.text { color: var(--text); }
+.stream-line.hook { color: var(--cyan); }
+.stream-line.diag { color: var(--red); }
+.stream-line.debug { color: var(--gray); }
+.stream-line.marker { color: var(--dim); }
+.stream-line.agent-tag { font-weight: bold; }
+.stream-line.agent-main { color: var(--blue); }
+.stream-line.agent-sub { color: var(--magenta); }
+.stream-line.separator { color: var(--dim); }
+
+/* ── Footer ── */
+#footer {
+  height: 28px; background: var(--bg2);
+  border-top: 1px solid var(--border);
+  display: flex; align-items: center;
+  padding: 0 8px; gap: 6px;
+  font-size: 11px; flex-shrink: 0; flex-wrap: wrap;
+}
+#footer .sep { color: var(--dim); margin: 0 2px; }
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* ── Focus ring ── */
+#stream-panel:focus { outline: none; }
+
+/* ── Markdown & code blocks ── */
+.md-content { line-height: 1.6; color: var(--text); }
+.md-content p { margin: 4px 0; }
+.md-content ul, .md-content ol { padding-left: 20px; margin: 4px 0; }
+.md-content li { margin: 2px 0; }
+.md-content strong { color: var(--white); }
+.md-content a { color: var(--blue); text-decoration: underline; }
+.md-content h1, .md-content h2, .md-content h3, .md-content h4,
+.md-content h5, .md-content h6 { color: var(--white); margin: 8px 0 4px; font-size: inherit; font-weight: bold; }
+.md-content blockquote { border-left: 3px solid var(--purple); padding-left: 12px; color: var(--dim); margin: 4px 0; }
+.md-content hr { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
+.md-content table { border-collapse: collapse; margin: 4px 0; width: 100%; }
+.md-content th, .md-content td { border: 1px solid var(--border); padding: 4px 8px; text-align: left; }
+.md-content th { background: var(--bg3); color: var(--white); }
+.md-content img { max-width: 100%; }
+
+.code-block-wrapper { margin: 8px 0; border-radius: 6px; overflow: hidden; border: 1px solid var(--border); }
+.code-block-header { display: flex; align-items: center; justify-content: space-between; padding: 4px 12px; background: var(--bg3); font-size: 11px; color: var(--dim); }
+.code-block-header .lang-tag { color: var(--blue); font-weight: bold; }
+.code-block-wrapper pre { margin: 0; padding: 12px; overflow-x: auto; font-size: 12px; line-height: 1.5; }
+.code-block-wrapper pre code { font-family: 'SF Mono', 'Menlo', 'Monaco', 'Consolas', monospace; font-size: 12px; }
+
+/* Override highlight.js background to match our theme */
+.hljs { background: #0d1117 !important; }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <button class="btn on" id="btn-thinking" onclick="toggleThinking()" data-tooltip="Toggle thinking">🧠 Thinking</button>
+  <button class="btn on" id="btn-tool-input" onclick="toggleToolInput()" data-tooltip="Toggle tool input">🔧 Tools</button>
+  <button class="btn on" id="btn-tool-output" onclick="toggleToolOutput()" data-tooltip="Toggle tool output">📤 Output</button>
+  <button class="btn on" id="btn-text" onclick="toggleText()" data-tooltip="Toggle text responses">💬 Text</button>
+  <span class="sep">│</span>
+  <button class="btn on" id="btn-autoscroll" onclick="toggleAutoScroll()" data-tooltip="Auto-scroll">⇣ Auto</button>
+  <button class="btn" id="btn-tree-toggle" onclick="toggleTree()" data-tooltip="Toggle tree panel">📂 Tree</button>
+  <span class="sep">│</span>
+  <span id="session-info">Connecting...</span>
+  <div class="auto">
+    <button class="btn on" id="btn-autodisco" onclick="toggleAutoDiscovery()" data-tooltip="Auto-discover">🔍 Auto</button>
+    <span class="sep">│</span>
+    <span id="token-info"></span>
+  </div>
+</div>
+
+<div id="main">
+  <div id="tree-panel">
+    <div id="tree-resize-handle"></div>
+    <div id="tree-toolbar">
+      <button class="btn btn-icon" onclick="selectAll()" data-tooltip="Show all sessions/agents">⊞</button>
+      <button class="btn btn-icon accent" onclick="soloSelected()" data-tooltip="Solo selected">⊙</button>
+      <button class="btn btn-icon danger" onclick="removeSelectedSession()" data-tooltip="Remove session">✕</button>
+      <span style="flex:1"></span>
+      <span id="tree-cursor-info" style="font-size:10px;color:var(--dim)"></span>
+    </div>
+    <div id="tree-content"></div>
+  </div>
+  <div id="stream-panel-wrap">
+    <div id="stream-toolbar">
+      <button class="btn btn-icon" onclick="scrollToTop()" data-tooltip="Top">⏫</button>
+      <button class="btn btn-icon" onclick="scrollUp()" data-tooltip="Up">↑</button>
+      <button class="btn btn-icon" onclick="scrollDown()" data-tooltip="Down">↓</button>
+      <button class="btn btn-icon" onclick="scrollToBottom()" data-tooltip="Bottom">⏬</button>
+    </div>
+    <div id="stream-panel" tabindex="0"></div>
+  </div>
+</div>
+
+<div id="footer">
+  <span id="scroll-pos">0%</span>
+  <span class="sep">│</span>
+  <span id="item-count">0 items</span>
+  <span class="sep">│</span>
+  </div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/4.3.0/marked.min.js"></script>
+<script>
+// ══════════════════════════════════════════════════════════════════════════════
+// DOM refs
+// ══════════════════════════════════════════════════════════════════════════════
+
+const streamEl = document.getElementById('stream-panel');
+const treeEl = document.getElementById('tree-content');
+const sessionInfo = document.getElementById('session-info');
+const tokenInfo = document.getElementById('token-info');
+const treeCursorInfo = document.getElementById('tree-cursor-info');
+
+// ══════════════════════════════════════════════════════════════════════════════
+// State
+// ══════════════════════════════════════════════════════════════════════════════
+
+let ws = null;
+let reconnectTimer = null;
+let reconnectDelay = 1000;
+const MaxReconnectDelay = 30000;
+let showTree = true;
+let autoScroll = true;
+let lastMsgTime = 0;
+let staleCheckTimer = null;
+
+let sessions = [];
+let treeNodes = [];
+let treeCursor = 0;
+let streamItems = [];
+let seenToolIDs = new Set();
+let toolNameMap = new Map();  // toolID -> toolName
+let filters = new Map();
+
+let showThinking = true;
+let showToolInput = true;
+let showToolOutput = true;
+let showText = true;
+let autoDiscovery = true;
+
+let renderPending = false;
+
+let totalInput = 0, totalOutput = 0, totalCacheCreate = 0, totalCacheRead = 0;
+let contextData = {};
+
+let collapseAfter = 0;
+let collapseTimer = null;
+let activeRefreshTimer = null;
+
+const MAX_ITEMS = 1000;
+const MAX_LINES = 50;
+let renderedItemCount = 0;
+let needsFullRender = true;
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Markdown renderer (marked + highlight.js)
+// ══════════════════════════════════════════════════════════════════════════════
+
+const mdRenderer = new marked.Renderer();
+mdRenderer.code = function (code, lang) {
+  let highlighted;
+  if (lang && hljs.getLanguage(lang)) {
+    try {
+      highlighted = hljs.highlight(code, { language: lang }).value;
+    } catch {
+      highlighted = hljs.highlightAuto(code).value;
+    }
+  } else {
+    highlighted = hljs.highlightAuto(code).value;
+  }
+  const langTag = lang ? `<span class="lang-tag">${esc(lang)}</span>` : '';
+  return `<div class="code-block-wrapper">
+    <div class="code-block-header">${langTag}<span></span></div>
+    <pre><code>${highlighted}</code></pre>
+  </div>`;
+};
+marked.setOptions({ renderer: mdRenderer, breaks: true, gfm: true });
+
+function mdRender(text) {
+  try {
+    return marked.parse(text);
+  } catch {
+    return esc(text);
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// WebSocket
+// ══════════════════════════════════════════════════════════════════════════════
+
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}`);
+
+  ws.onopen = () => {
+    sessionInfo.textContent = 'Connected';
+    lastMsgTime = Date.now();
+    reconnectDelay = 1000;
+    startStaleCheck();
+    startActiveRefresh();
+  };
+  ws.onclose = () => {
+    sessionInfo.textContent = 'Disconnected, reconnecting...';
+    stopStaleCheck();
+    if (activeRefreshTimer) { clearInterval(activeRefreshTimer); activeRefreshTimer = null; }
+    reconnectTimer = setTimeout(connect, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 2, MaxReconnectDelay);
+  };
+  ws.onerror = () => {};
+
+  ws.onmessage = (e) => {
+    lastMsgTime = Date.now();
+    let msg;
+    try { msg = JSON.parse(e.data); } catch { return; }
+    handleMessage(msg);
+  };
+}
+
+function startStaleCheck() {
+  if (staleCheckTimer) clearInterval(staleCheckTimer);
+  staleCheckTimer = setInterval(() => {
+    if (Date.now() - lastMsgTime > 45000) {
+      sessionInfo.textContent = 'Stale connection, reconnecting...';
+      stopStaleCheck();
+      try { ws.close(); } catch {}
+      // onclose handler will handle reconnect — no separate timer needed
+    }
+  }, 10000);
+}
+
+function stopStaleCheck() {
+  if (staleCheckTimer) { clearInterval(staleCheckTimer); staleCheckTimer = null; }
+}
+
+function handleMessage(msg) {
+  switch (msg.type) {
+    case 'snapshot': handleSnapshot(msg.payload); break;
+    case 'itemBatch': handleItemBatch(msg.payload); break;
+    case 'item': handleItem(msg.payload); break;
+    case 'newSession': handleNewSession(msg.payload); break;
+    case 'newAgent': handleNewAgent(msg.payload); break;
+    case 'newBackgroundTask': handleNewBgTask(msg.payload); break;
+    case 'sessionRemoved': handleSessionRemoved(msg.payload); break;
+    case 'autoDiscoveryChanged': autoDiscovery = msg.payload.enabled; scheduleRender(); break;
+    case 'context': contextData = msg.payload; scheduleRender(); break;
+    case 'config':
+      if (msg.payload.collapseAfter > 0 && !collapseTimer) {
+        applyCollapsePolicy(msg.payload.collapseAfter);
+      }
+      break;
+    case 'heartbeat': break;
+  }
+}
+
+function sendCmd(action, extra = {}) {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ action, ...extra }));
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Snapshot / Session management
+// ══════════════════════════════════════════════════════════════════════════════
+
+function handleSnapshot(payload) {
+  autoDiscovery = payload.autoDiscovery;
+  for (const s of (payload.sessions || [])) {
+    let session = sessions.find(x => x.id === s.id);
+    if (!session) {
+      session = {
+        id: s.id, projectPath: s.projectPath, title: '',
+        folder: folderName(s.projectPath), model: '',
+        agents: [], tasks: [], collapsed: false, pinned: false,
+        lastActivity: Date.now(),
+      };
+      sessions.push(session);
+      session.agents.push({ id: '', name: 'Main', type: 'main' });
+    }
+    session.lastActivity = Date.now();
+    for (const [aid, atype] of Object.entries(s.subagents || {})) {
+      if (!session.agents.find(a => a.id === aid)) {
+        session.agents.push({ id: aid, name: agentDisplayName(aid, atype), type: 'agent' });
+      }
+    }
+    for (const t of (s.backgroundTasks || [])) {
+      if (!session.tasks.find(ta => ta.id === t.id)) {
+        session.tasks.push({
+          id: t.id, parentAgentID: t.parentAgentID,
+          toolName: t.toolName, outputPath: t.outputPath,
+          isComplete: t.isComplete,
+        });
+      }
+    }
+  }
+  updateFilters();
+  rebuildNodes();
+  scheduleRender();
+}
+
+function handleNewSession(payload) {
+  if (sessions.find(s => s.id === payload.sessionID)) return;
+  sessions.push({
+    id: payload.sessionID, projectPath: payload.projectPath,
+    title: '', folder: folderName(payload.projectPath), model: '',
+    agents: [{ id: '', name: 'Main', type: 'main' }],
+    tasks: [], collapsed: false, pinned: false,
+    lastActivity: Date.now(),
+  });
+  updateFilters();
+  rebuildNodes();
+  scheduleRender();
+}
+
+function handleNewAgent(payload) {
+  const s = sessions.find(s => s.id === payload.sessionID);
+  if (!s || s.agents.find(a => a.id === payload.agentID)) return;
+  s.agents.push({
+    id: payload.agentID,
+    name: agentDisplayName(payload.agentID, payload.agentType),
+    type: 'agent',
+  });
+  updateFilters();
+  rebuildNodes();
+  scheduleRender();
+}
+
+function handleNewBgTask(payload) {
+  const s = sessions.find(s => s.id === payload.sessionID);
+  if (!s || s.tasks.find(t => t.id === payload.toolID)) return;
+  s.tasks.push({
+    id: payload.toolID, parentAgentID: payload.parentAgentID,
+    toolName: payload.toolName, outputPath: payload.outputPath,
+    isComplete: payload.isComplete,
+  });
+  rebuildNodes();
+  scheduleRender();
+}
+
+function handleSessionRemoved(payload) {
+  const idx = sessions.findIndex(s => s.id === payload.sessionID);
+  if (idx >= 0) sessions.splice(idx, 1);
+  updateFilters();
+  rebuildNodes();
+  scheduleRender();
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Stream items
+// ══════════════════════════════════════════════════════════════════════════════
+
+function handleItem(item) {
+  if (item.type === 'session_title') {
+    const s = sessions.find(s => s.id === item.sessionID);
+    if (s) { s.title = item.content.slice(0, 30); }
+    scheduleRender();
+    return;
+  }
+  // Update activity
+  const s = sessions.find(s => s.id === item.sessionID);
+  if (s) s.lastActivity = Date.now();
+  pushItem(item);
+  scheduleRender();
+}
+
+function handleItemBatch(items) {
+  for (const item of items) {
+    if (item.type === 'session_title') {
+      const s = sessions.find(s => s.id === item.sessionID);
+      if (s) { s.title = item.content.slice(0, 30); }
+      continue;
+    }
+    pushItem(item);
+  }
+  scheduleRender();
+}
+
+function pushItem(item) {
+  if (item.inputTokens > 0) totalInput += item.inputTokens;
+  if (item.outputTokens > 0) totalOutput += item.outputTokens;
+  if (item.cacheCreationTokens > 0) totalCacheCreate += item.cacheCreationTokens;
+  if (item.cacheReadTokens > 0) totalCacheRead += item.cacheReadTokens;
+
+  if (item.model) {
+    const s = sessions.find(s => s.id === item.sessionID);
+    if (s) s.model = item.model;
+  }
+
+  if (item.type === 'tool_input' && item.toolID && item.toolName) {
+    toolNameMap.set(item.toolID, item.toolName);
+  }
+
+  if (item.toolID) {
+    const key = `${item.toolID}:${item.type}`;
+    if (seenToolIDs.has(key)) return;
+    seenToolIDs.add(key);
+    if (seenToolIDs.size > 5000) seenToolIDs.clear();
+  }
+
+  streamItems.push(item);
+  if (streamItems.length > MAX_ITEMS) {
+    streamItems = streamItems.slice(-MAX_ITEMS);
+    needsFullRender = true;
+  }
+}
+
+function isItemVisible(item) {
+  if (!filters.has(item.sessionID + ':' + (item.agentID || ''))) return false;
+  switch (item.type) {
+    case 'thinking': return showThinking;
+    case 'tool_input': return showToolInput;
+    case 'tool_output': return showToolOutput;
+    case 'text': return showText;
+    default: return true;
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Tree
+// ══════════════════════════════════════════════════════════════════════════════
+
+function rebuildNodes() {
+  treeNodes = [];
+  for (const s of sessions) {
+    treeNodes.push({ type: 'session', level: 0, isLast: false, ...s });
+    if (s.collapsed) continue;
+    const agents = s.agents || [];
+    const lastAgentIdx = agents.length - 1;
+    for (let ai = 0; ai < agents.length; ai++) {
+      const a = agents[ai];
+      const isLastAgent = ai === lastAgentIdx;
+      const tasks = s.tasks.filter(t =>
+        (a.id === '' && !t.parentAgentID) || t.parentAgentID === a.id
+      );
+      const lastTaskIdx = tasks.length - 1;
+      const hasTasks = tasks.length > 0;
+      treeNodes.push({ type: a.type, id: a.id, name: a.name, sessionID: s.id, level: 1, isLast: isLastAgent && !hasTasks });
+      for (let ti = 0; ti < tasks.length; ti++) {
+        const t = tasks[ti];
+        treeNodes.push({
+          type: 'task', id: t.id, name: t.toolName,
+          sessionID: s.id, parentAgentID: t.parentAgentID,
+          outputPath: t.outputPath, isComplete: t.isComplete,
+          level: 2, isLast: isLastAgent && ti === lastTaskIdx,
+        });
+      }
+    }
+  }
+  // Mark last session
+  const sessionNodes = treeNodes.filter(n => n.type === 'session');
+  if (sessionNodes.length > 0) sessionNodes[sessionNodes.length - 1].isLast = true;
+
+  if (treeCursor >= treeNodes.length) treeCursor = Math.max(0, treeNodes.length - 1);
+}
+
+function treePrefix(node) {
+  if (node.level === 0) return '';
+  const branch = node.isLast ? '└── ' : '├── ';
+  if (node.level === 1) return branch;
+  // Level 2: need to check if parent agent is last
+  const agentNode = treeNodes.find(n => n.sessionID === node.sessionID && (n.type === 'main' || n.type === 'agent') && n.id === (node.parentAgentID || ''));
+  const parentIsLast = agentNode ? agentNode.isLast : true;
+  const stem = parentIsLast ? '    ' : '│   ';
+  return stem + branch;
+}
+
+function getNodeHTML(node, idx) {
+  const isSelected = idx === treeCursor;
+  const selClass = isSelected ? ' selected' : '';
+
+  if (node.type === 'session') {
+    const displayName = node.title || folderName(node.projectPath) || node.id.slice(0, 14);
+    const parts = [];
+    if (node.folder) parts.push(`📂 ${esc(node.folder)}`);
+    if (node.model) parts.push(`🧠 ${esc(node.model)}`);
+    const activeDot = isSessionActive(node) ? '<span class="active-dot on">🟢</span>' : '<span class="active-dot off">⚪</span>';
+    const subInfo = parts.length > 0 ? ` <span style="color:#6b7280;font-size:10px">${parts.join(' · ')}</span>` : '';
+    const agentCount = node.agents ? node.agents.filter(a => a.type === 'agent').length : 0;
+    return `<div class="tree-row${selClass ? ' selected' : ''}">
+      <div class="tree-node" onclick="treeClick(${idx})" data-idx="${idx}">
+        <span class="tree-prefix">${treePrefix(node)}</span>${activeDot} ${node.collapsed ? '▸' : '▾'} ${esc(displayName)}
+        ${node.collapsed && agentCount > 0 ? `(${agentCount})` : ''}
+        ${subInfo}
+      </div>
+      <span class="tree-actions">
+        <button class="btn btn-icon accent" onclick="event.stopPropagation();selectIndex(${idx});soloSelected()" data-tooltip="Solo">⊙</button>
+        <button class="btn btn-icon danger" onclick="event.stopPropagation();selectIndex(${idx});removeSelectedSession()" data-tooltip="Remove">✕</button>
+      </span>
+    </div>`;
+  }
+
+  if (node.type === 'main' || node.type === 'agent') {
+    const icon = node.type === 'main' ? '💬' : '🤖';
+    const enabled = filters.get(node.sessionID + ':' + node.id);
+    const ctxKey = node.sessionID + ':' + node.id;
+    const ctx = contextData[ctxKey];
+    let ctxPct = '';
+    if (ctx && ctx.contextWindow > 0 && ctx.inputTokens > 0) {
+      const pct = Math.round(ctx.inputTokens / ctx.contextWindow * 100);
+      const cls = pct > 80 ? 'danger' : pct > 50 ? 'warn' : '';
+      ctxPct = `<span class="ctx-pct ${cls}">${pct}%</span>`;
+    }
+    const activeDot = ctx && (Date.now() - ctx.lastActivity < 120000) ? '<span class="active-dot on">🟢</span>' : '<span class="active-dot off">⚪</span>';
+    return `<div class="tree-row${selClass ? ' selected' : ''}">
+      <div class="tree-node${enabled ? '' : ' dim'}" onclick="treeClick(${idx})" data-idx="${idx}">
+          <span class="tree-prefix">${treePrefix(node)}</span>${activeDot} ${icon} ${esc(node.name || '')}${ctxPct}
+      </div>
+      <span class="tree-actions">
+        <button class="btn btn-icon accent" onclick="event.stopPropagation();selectIndex(${idx});soloSelected()" data-tooltip="Solo">⊙</button>
+        <button class="btn btn-icon" onclick="event.stopPropagation();selectIndex(${idx});toggleNodeVisibility(${idx})" data-tooltip="${enabled ? 'Hide' : 'Show'}">${enabled ? '👁' : '─'}</button>
+      </span>
+    </div>`;
+  }
+
+  if (node.type === 'task') {
+    const icon = node.isComplete ? '✓' : '⏳';
+    return `<div class="tree-row${selClass ? ' selected' : ''}">
+      <div class="tree-node dim" onclick="treeClick(${idx})" data-idx="${idx}">
+          <span class="tree-prefix">${treePrefix(node)}</span>${icon} ${esc(node.name || 'bg-task')}
+      </div>
+      <span class="tree-actions">
+        <button class="btn btn-icon" onclick="event.stopPropagation();selectIndex(${idx});loadBgTask(${idx})" data-tooltip="Load output">▶</button>
+      </span>
+    </div>`;
+  }
+
+  return '';
+}
+
+function renderTree() {
+  if (treeNodes.length === 0) {
+    treeEl.innerHTML = '<div class="tree-node" style="padding:8px;color:var(--dim)">Waiting for sessions...</div>';
+    treeCursorInfo.textContent = '';
+    return;
+  }
+  let html = '';
+  for (let i = 0; i < treeNodes.length; i++) {
+    html += getNodeHTML(treeNodes[i], i);
+  }
+  treeEl.innerHTML = html;
+
+  // Scroll selected into view
+  const sel = treeEl.querySelector('.tree-node.selected');
+  if (sel) sel.scrollIntoView({ block: 'nearest' });
+
+  treeCursorInfo.textContent = `${treeCursor + 1}/${treeNodes.length}`;
+}
+
+function isSessionActive(session) {
+  if (!session) return false;
+  const now = Date.now();
+  // Check main agent
+  const mainCtx = contextData[session.id + ':'];
+  if (mainCtx && (now - mainCtx.lastActivity) < 120000) return true;
+  // Check subagents
+  for (const a of session.agents) {
+    if (a.id === '') continue;
+    const ctx = contextData[session.id + ':' + a.id];
+    if (ctx && (now - ctx.lastActivity) < 120000) return true;
+  }
+  // Fallback: check own lastActivity
+  return (now - session.lastActivity) < 120000;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Stream rendering
+// ══════════════════════════════════════════════════════════════════════════════
+
+function renderStream() {
+  const visible = streamItems.filter(isItemVisible);
+
+  if (needsFullRender || renderedItemCount > visible.length) {
+    // Full rebuild: filter changed, items trimmed, or initial render
+    const lines = [];
+    for (const item of visible) {
+      for (const l of renderItem(item)) lines.push(l);
+    }
+
+    let html;
+    if (lines.length > 0) {
+      html = lines.map(l => {
+      if (l.html) return `<div class="${l.cls}">${l.text}</div>`;
+      return `<div class="${l.cls}">${esc(l.text)}</div>`;
+    }).join('\n');
+    } else if (streamItems.length > 0) {
+      html = `<div style="color:#fbbf24;padding:20px;text-align:center">${streamItems.length} items buffered, 0 visible — check toggles or tree selection</div>`;
+    } else {
+      html = '<div style="color:#6b7280;padding:20px;text-align:center">Waiting for output...</div>';
+    }
+
+    streamEl.innerHTML = html;
+    renderedItemCount = visible.length;
+    needsFullRender = false;
+    if (autoScroll) requestAnimationFrame(() => { streamEl.scrollTop = streamEl.scrollHeight; });
+  } else {
+    // Incremental append: only add new items since last render
+    const wasAtBottom = streamEl.scrollHeight - streamEl.scrollTop - streamEl.clientHeight < 50;
+    for (let i = renderedItemCount; i < visible.length; i++) {
+      for (const l of renderItem(visible[i])) {
+        const div = document.createElement('div');
+        div.className = l.cls;
+        div.innerHTML = l.html ? l.text : esc(l.text);
+        streamEl.appendChild(div);
+      }
+    }
+    renderedItemCount = visible.length;
+    if (autoScroll && wasAtBottom) requestAnimationFrame(() => { streamEl.scrollTop = streamEl.scrollHeight; });
+  }
+
+  const maxScroll = streamEl.scrollHeight - streamEl.clientHeight;
+  const pct = maxScroll > 0 ? Math.round(streamEl.scrollTop / maxScroll * 100) : 0;
+  document.getElementById('scroll-pos').textContent = Math.min(100, pct) + '%';
+  document.getElementById('item-count').textContent = streamItems.length + ' items';
+}
+
+function renderItem(item) {
+  const lines = [];
+  const isSub = !!item.agentID;
+  const agentTagCls = 'stream-line ' + (isSub ? 'agent-sub agent-tag' : 'agent-main agent-tag');
+  const sep = ' » ';
+
+  if (item.type === 'turn_marker') {
+    return [{ cls: 'stream-line marker', text: `── turn ended ${fmtDur(item.durationMs)} ──` }];
+  }
+  if (item.type === 'compact_marker') {
+    const label = item.content ? `compacted (${item.content})` : 'compacted';
+    return [{ cls: 'stream-line marker', text: `── ${label} ──` }];
+  }
+  if (item.type === 'pr_link') {
+    return [{ cls: 'stream-line marker', text: `── ${item.content} ──` }];
+  }
+
+  const agentName = item.agentName || 'Main';
+
+  switch (item.type) {
+    case 'thinking':
+      lines.push({ cls: agentTagCls, text: agentName + sep + '🧠 Thinking' });
+      for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line thinking', text: l });
+      break;
+    case 'tool_input':
+      lines.push({ cls: agentTagCls, text: agentName + sep + `🔧 ${item.toolName || ''}` });
+      for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line tool-input', text: l });
+      break;
+    case 'tool_output': {
+      let tn = '';
+      if (item.toolID) {
+        tn = toolNameMap.get(item.toolID) || '';
+      }
+      let label = tn ? `📤 ${tn} result` : '📤 Output';
+      if (item.durationMs > 0) label += ' ' + fmtDur(item.durationMs);
+      lines.push({ cls: agentTagCls, text: agentName + sep + label });
+      for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line tool-output', text: l });
+      break;
+    }
+    case 'text':
+      lines.push({ cls: agentTagCls, text: agentName + sep + '💬 Response' });
+      lines.push({ cls: 'stream-line text md-content', text: mdRender(item.content), html: true });
+      break;
+    case 'hook_output': {
+      let label = '🪝 Hook';
+      if (item.toolName) label += ' ' + item.toolName;
+      if (item.durationMs > 0) label += ' ' + fmtDur(item.durationMs);
+      lines.push({ cls: agentTagCls, text: agentName + sep + label });
+      for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line hook', text: l });
+      break;
+    }
+    case 'diagnostics': {
+      let label = '⚠ Diagnostics';
+      if (item.toolName) label += ' ' + item.toolName;
+      lines.push({ cls: agentTagCls, text: agentName + sep + label });
+      for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line diag', text: l });
+      break;
+    }
+    case 'debug': {
+      let label = '🔍 Debug';
+      if (item.toolName) label += ' ' + item.toolName;
+      lines.push({ cls: agentTagCls, text: agentName + sep + label });
+      for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line debug', text: l });
+      break;
+    }
+  }
+
+  lines.push({ cls: 'stream-line separator', text: '─'.repeat(60) });
+  return lines;
+}
+
+function truncContent(content) {
+  const raw = content.split('\n');
+  return raw.length > MAX_LINES ? raw.slice(0, MAX_LINES).concat([`... (${raw.length - MAX_LINES} more lines)`]) : raw;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Button / header refresh
+// ══════════════════════════════════════════════════════════════════════════════
+
+function refreshButtons() {
+  document.getElementById('btn-thinking').classList.toggle('on', showThinking);
+  document.getElementById('btn-tool-input').classList.toggle('on', showToolInput);
+  document.getElementById('btn-tool-output').classList.toggle('on', showToolOutput);
+  document.getElementById('btn-text').classList.toggle('on', showText);
+  document.getElementById('btn-autoscroll').classList.toggle('on', autoScroll);
+  document.getElementById('btn-tree-toggle').classList.toggle('on', showTree);
+  document.getElementById('btn-autodisco').classList.toggle('on', autoDiscovery);
+
+  // Session info
+  let info = '';
+  if (sessions.length === 0) info = 'Waiting...';
+  else if (sessions.length === 1) {
+    const s = sessions[0];
+    info = (s.title || folderName(s.projectPath) || s.id.slice(0, 14));
+  } else info = sessions.length + ' sessions';
+  if (!autoDiscovery) info += ' [paused]';
+  sessionInfo.textContent = info;
+
+  // Token info
+  let tokStr = '';
+  if (totalInput > 0 || totalOutput > 0) {
+    tokStr = `${fmtTok(totalInput)} in / ${fmtTok(totalOutput)} out`;
+    if (totalCacheCreate > 0 || totalCacheRead > 0) {
+      tokStr += ` · cache ${fmtTok(totalCacheCreate)}+${fmtTok(totalCacheRead)}`;
+    }
+  }
+  tokenInfo.textContent = tokStr;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Actions
+// ══════════════════════════════════════════════════════════════════════════════
+
+function selectIndex(idx) {
+  if (idx >= 0 && idx < treeNodes.length) treeCursor = idx;
+}
+
+function treeClick(idx) {
+  selectIndex(idx);
+  const node = treeNodes[idx];
+  if (!node) return;
+  if (node.type === 'session') {
+    const session = sessions.find(s => s.id === node.id);
+    if (session) {
+      session.collapsed = !session.collapsed;
+      if (!session.collapsed) session.pinned = true;
+    }
+    rebuildNodes();
+  } else if (node.type === 'main' || node.type === 'agent') {
+    toggleNodeVisibility(idx);
+    return;
+  } else if (node.type === 'task') {
+    loadBgTask(idx);
+    return;
+  }
+  renderAll();
+}
+
+function toggleNodeVisibility(idx) {
+  const node = treeNodes[idx];
+  if (!node) return;
+  const key = node.sessionID + ':' + node.id;
+  filters.set(key, !filters.get(key));
+  renderAll();
+}
+
+function loadBgTask(idx) {
+  const node = treeNodes[idx];
+  if (!node || node.type !== 'task') return;
+  if (!node.outputPath) return;
+
+  // Fetch the actual output file
+  fetch(`/api/task-output?path=${encodeURIComponent(node.outputPath)}`)
+    .then(r => r.json())
+    .then(data => {
+      const content = data.content || `[Error: ${data.error || 'unknown'}]`;
+      const statusIcon = node.isComplete ? '✓' : '⏳';
+      streamItems.push({
+        type: 'tool_output', sessionID: node.sessionID, agentID: node.parentAgentID || '',
+        agentName: '', toolName: `${statusIcon} ${node.name || 'bg-task'}`,
+        content: content,
+        timestamp: new Date(), toolID: '', durationMs: 0,
+        inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, model: '',
+      });
+      renderAll();
+    })
+    .catch(err => {
+      streamItems.push({
+        type: 'tool_output', sessionID: node.sessionID, agentID: node.parentAgentID || '',
+        agentName: '', toolName: `⏳ ${node.name || 'bg-task'}`,
+        content: `[Failed to load: ${err.message}]`,
+        timestamp: new Date(), toolID: '', durationMs: 0,
+        inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, model: '',
+      });
+      renderAll();
+    });
+}
+
+function soloSelected() {
+  const node = treeNodes[treeCursor];
+  if (!node || node.type === 'task') return;
+
+  if (isSoloed(node)) {
+    updateFilters();
+  } else {
+    filters.clear();
+    if (node.type === 'session') {
+      const session = sessions.find(s => s.id === node.id);
+      if (session && session.collapsed) {
+        session.collapsed = false;
+        session.pinned = true;
+        rebuildNodes();
+      }
+      for (const a of node.agents) filters.set(node.id + ':' + a.id, true);
+    } else if (node.type === 'main' || node.type === 'agent') {
+      filters.set(node.sessionID + ':' + node.id, true);
+    }
+  }
+  renderAll();
+}
+
+function isSoloed(node) {
+  if (node.type === 'session') {
+    for (const s of sessions) {
+      if (s.id === node.id) continue;
+      for (const a of s.agents) {
+        if (filters.get(s.id + ':' + a.id)) return false;
+      }
+    }
+    return true;
+  }
+  if (node.type === 'main' || node.type === 'agent') {
+    const key = node.sessionID + ':' + node.id;
+    if (!filters.get(key)) return false;
+    for (const s of sessions) {
+      for (const a of s.agents) {
+        if ((s.id + ':' + a.id) !== key && filters.get(s.id + ':' + a.id)) return false;
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
+function selectAll() {
+  updateFilters();
+  renderAll();
+}
+
+function removeSelectedSession() {
+  const node = treeNodes[treeCursor];
+  if (!node) return;
+  let sid;
+  if (node.type === 'session') sid = node.id;
+  else sid = node.sessionID;
+  if (!sid) return;
+  if (!confirm(`Remove session ${sid.slice(0, 12)}...?`)) return;
+  sessions = sessions.filter(s => s.id !== sid);
+  sendCmd('removeSession', { sessionID: sid });
+  updateFilters();
+  rebuildNodes();
+  renderAll();
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Toggles
+// ══════════════════════════════════════════════════════════════════════════════
+
+function toggleThinking() { showThinking = !showThinking; needsFullRender = true; renderStream(); refreshButtons(); }
+function toggleToolInput() { showToolInput = !showToolInput; needsFullRender = true; renderStream(); refreshButtons(); }
+function toggleToolOutput() { showToolOutput = !showToolOutput; needsFullRender = true; renderStream(); refreshButtons(); }
+function toggleText() { showText = !showText; needsFullRender = true; renderStream(); refreshButtons(); }
+function toggleAutoScroll() { autoScroll = !autoScroll; if (autoScroll) streamEl.scrollTop = streamEl.scrollHeight; renderAll(); }
+function toggleTree() { showTree = !showTree; document.getElementById('tree-panel').classList.toggle('hidden', !showTree); }
+function toggleAutoDiscovery() { sendCmd('toggleAutoDiscovery'); }
+
+function scrollToTop() { streamEl.scrollTop = 0; autoScroll = false; renderAll(); }
+function scrollUp() { streamEl.scrollTop -= 80; autoScroll = false; renderAll(); }
+function scrollDown() { streamEl.scrollTop += 80; renderAll(); }
+function scrollToBottom() { streamEl.scrollTop = streamEl.scrollHeight; autoScroll = true; renderAll(); }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Tree panel resize
+// ══════════════════════════════════════════════════════════════════════════════
+
+(function setupResize() {
+  const panel = document.getElementById('tree-panel');
+  const handle = document.getElementById('tree-resize-handle');
+  let startX, startWidth;
+
+  handle.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    startX = e.clientX;
+    startWidth = panel.offsetWidth;
+    handle.classList.add('active');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  });
+
+  document.addEventListener('mousemove', (e) => {
+    if (!handle.classList.contains('active')) return;
+    const dx = e.clientX - startX;
+    const newWidth = startWidth + dx;
+    if (newWidth >= 180 && newWidth <= window.innerWidth * 0.6) {
+      panel.style.width = newWidth + 'px';
+    }
+  });
+
+  document.addEventListener('mouseup', () => {
+    handle.classList.remove('active');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  });
+})();
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Auto-collapse
+// ══════════════════════════════════════════════════════════════════════════════
+
+function applyCollapsePolicy(duration) {
+  collapseAfter = duration;
+  if (collapseTimer) clearInterval(collapseTimer);
+  if (duration <= 0) return;
+
+  collapseTimer = setInterval(() => {
+    if (!collapseAfter) return;
+    const now = Date.now();
+    let changed = false;
+    for (const s of sessions) {
+      if (s.pinned || s.collapsed) continue;
+      if ((now - s.lastActivity) > collapseAfter) {
+        s.collapsed = true;
+        changed = true;
+      }
+    }
+    if (changed) {
+      rebuildNodes();
+      renderAll();
+    }
+  }, 5000);
+}
+
+function startActiveRefresh() {
+  if (activeRefreshTimer) clearInterval(activeRefreshTimer);
+  activeRefreshTimer = setInterval(() => {
+    const prevHTML = treeEl.innerHTML;
+    rebuildNodes();
+    renderTree();
+    if (treeEl.innerHTML !== prevHTML) renderAll();
+  }, 15000);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Scroll detection
+// ══════════════════════════════════════════════════════════════════════════════
+
+streamEl.addEventListener('scroll', () => {
+  const atBottom = streamEl.scrollHeight - streamEl.scrollTop - streamEl.clientHeight < 50;
+  if (atBottom && !autoScroll) autoScroll = true;
+  if (!atBottom && autoScroll) autoScroll = false;
+  refreshButtons();
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Helpers
+// ══════════════════════════════════════════════════════════════════════════════
+
+function updateFilters() {
+  filters.clear();
+  for (const s of sessions) {
+    for (const a of s.agents) {
+      filters.set(s.id + ':' + a.id, true);
+    }
+  }
+}
+
+function agentDisplayName(id, type) {
+  if (type) {
+    const idx = type.lastIndexOf(':');
+    if (idx >= 0 && idx < type.length - 1) return type.slice(idx + 1);
+    return type;
+  }
+  if (!id) return 'Main';
+  return 'Agent-' + id.slice(0, 7);
+}
+
+function folderName(projectPath) {
+  if (!projectPath) return '';
+  const parts = projectPath.split('/');
+  return parts[parts.length - 1] || projectPath;
+}
+
+function esc(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function fmtDur(ms) {
+  if (!ms || ms <= 0) return '';
+  if (ms < 1000) return `(${ms}ms)`;
+  if (ms < 60000) return `(${(ms / 1000).toFixed(1)}s)`;
+  return `(${(ms / 60000).toFixed(1)}m)`;
+}
+
+function fmtTok(n) {
+  if (!n) return '0';
+  if (n < 1000) return String(n);
+  if (n < 1000000) return (n / 1000).toFixed(1) + 'k';
+  return (n / 1000000).toFixed(1) + 'm';
+}
+
+function renderAll() {
+  needsFullRender = true;
+  renderTree();
+  renderStream();
+  refreshButtons();
+}
+
+function scheduleRender() {
+  if (!renderPending) {
+    renderPending = true;
+    requestAnimationFrame(() => {
+      renderPending = false;
+      renderAll();
+    });
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Init
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Apply collapse-after from URL param
+const urlParams = new URLSearchParams(location.search);
+const ca = urlParams.get('collapseAfter');
+if (ca) {
+  applyCollapsePolicy(parseInt(ca) || 0);
+}
+
+connect();
+</script>
+</body>
+</html>
