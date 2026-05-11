@@ -1,6 +1,6 @@
 # claude-watch
 
-claude-watch — 一个 Claude Code 的实时 Web 监控仪表盘。
+claude-code-watch — 一个 Claude Code 的实时 Web 监控仪表盘。短命令 `cc-watch`。
 
 ## 核心作用
 

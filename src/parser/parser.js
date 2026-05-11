@@ -4,7 +4,7 @@
 // Constants
 // ============================================================================
 
-const StreamItemType = {
+var StreamItemType = {
   THINKING: 'thinking',
   TOOL_INPUT: 'tool_input',
   TOOL_OUTPUT: 'tool_output',
@@ -18,10 +18,20 @@ const StreamItemType = {
   SESSION_TITLE: 'session_title',
 };
 
-const AgentIDDisplayLength = 7;
-const debugPreviewLen = 240;
+var AgentIDDisplayLength = 7;
+var debugPreviewLen = 240;
 
-let debugAll = false;
+var debugAll = false;
+
+function makeItem(overrides = {}) {
+  return {
+    type: '', sessionID: '', agentID: '', agentName: '', timestamp: 0,
+    content: '', toolName: '', toolID: '', durationMs: 0,
+    inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0,
+    model: '',
+    ...overrides,
+  };
+}
 
 // ============================================================================
 // Exports
@@ -131,22 +141,11 @@ function debugItem(raw, line, timestamp) {
 
 function parseSessionTitle(raw, timestamp, title) {
   if (!title) return [];
-  return [{
+  return [makeItem({
     type: StreamItemType.SESSION_TITLE,
     sessionID: raw.sessionId,
-    agentID: '',
-    agentName: '',
-    timestamp,
     content: title,
-    toolName: '',
-    toolID: '',
-    durationMs: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheCreationTokens: 0,
-    cacheReadTokens: 0,
-    model: '',
-  }];
+  })];
 }
 
 // ============================================================================
@@ -157,39 +156,21 @@ function parseSystemMessage(raw, timestamp) {
   const name = agentDisplayName(raw.agentId);
   switch (raw.subtype) {
     case 'turn_duration':
-      return [{
+      return [makeItem({
         type: StreamItemType.TURN_MARKER,
         sessionID: raw.sessionId,
         agentID: raw.agentId || '',
         agentName: name,
-        timestamp,
-        content: '',
-        toolName: '',
-        toolID: '',
         durationMs: raw.durationMs || 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheCreationTokens: 0,
-        cacheReadTokens: 0,
-        model: '',
-      }];
+      })];
     case 'compact_boundary':
-      return [{
+      return [makeItem({
         type: StreamItemType.COMPACT_MARKER,
         sessionID: raw.sessionId,
         agentID: raw.agentId || '',
         agentName: name,
-        timestamp,
         content: formatCompactSummary(raw.compactMetadata),
-        toolName: '',
-        toolID: '',
-        durationMs: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheCreationTokens: 0,
-        cacheReadTokens: 0,
-        model: '',
-      }];
+      })];
     default:
       return [];
   }
@@ -227,18 +208,15 @@ function parseAttachment(raw, timestamp) {
   switch (raw.attachment.type) {
     case 'hook_success': {
       const body = raw.attachment.stdout || '';
-      return [{
+      return [makeItem({
         type: StreamItemType.HOOK_OUTPUT,
         sessionID: raw.sessionId,
         agentID: raw.agentId || '',
         agentName: name,
-        timestamp,
         toolName: raw.attachment.hookName || '',
         content: body,
-        toolID: '',
         durationMs: raw.attachment.durationMs || 0,
-        inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, model: '',
-      }];
+      })];
     }
     case 'diagnostics':
       return diagnosticsItems(raw, timestamp, name);
@@ -252,18 +230,14 @@ function diagnosticsItems(raw, timestamp, agentName) {
   const items = [];
   for (const f of raw.attachment.files) {
     if (!f.diagnostics || f.diagnostics.length === 0) continue;
-    items.push({
+    items.push(makeItem({
       type: StreamItemType.DIAGNOSTICS,
       sessionID: raw.sessionId,
       agentID: raw.agentId || '',
       agentName,
-      timestamp,
       toolName: diagnosticsHeader(f),
       content: diagnosticsBody(f.diagnostics),
-      toolID: '',
-      durationMs: 0,
-      inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, model: '',
-    });
+    }));
   }
   return items;
 }
@@ -311,18 +285,11 @@ function parsePRLink(raw, timestamp) {
   } else {
     content = `PR #${raw.prNumber}`;
   }
-  return [{
+  return [makeItem({
     type: StreamItemType.PR_LINK,
     sessionID: raw.sessionId,
-    agentID: '',
-    agentName: '',
-    timestamp,
     content,
-    toolName: '',
-    toolID: '',
-    durationMs: 0,
-    inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, model: '',
-  }];
+  })];
 }
 
 // ============================================================================
@@ -340,46 +307,33 @@ function parseAssistantMessage(raw, timestamp) {
     switch (block.type) {
       case 'thinking':
         if (block.thinking) {
-          items.push({
+          items.push(makeItem({
             type: StreamItemType.THINKING,
             agentID: raw.agentId || '',
             agentName: name,
-            timestamp,
             content: block.thinking,
-            toolName: '',
-            toolID: '',
-            durationMs: 0,
-            inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, model: '',
-          });
+          }));
         }
         break;
       case 'text':
         if (block.text) {
-          items.push({
+          items.push(makeItem({
             type: StreamItemType.TEXT,
             agentID: raw.agentId || '',
             agentName: name,
-            timestamp,
             content: block.text,
-            toolName: '',
-            toolID: '',
-            durationMs: 0,
-            inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, model: '',
-          });
+          }));
         }
         break;
       case 'tool_use':
-        items.push({
+        items.push(makeItem({
           type: StreamItemType.TOOL_INPUT,
           agentID: raw.agentId || '',
           agentName: name,
-          timestamp,
           content: formatToolInput(block.name, block.input),
           toolName: prettyToolName(block.name),
           toolID: block.id || '',
-          durationMs: 0,
-          inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, model: '',
-        });
+        }));
         break;
     }
   }
@@ -417,17 +371,14 @@ function parseUserMessage(raw, timestamp) {
 
   for (const result of msg.content) {
     if (result.type === 'tool_result') {
-      items.push({
+      items.push(makeItem({
         type: StreamItemType.TOOL_OUTPUT,
         agentID: raw.agentId || '',
         agentName: name,
-        timestamp,
         content: extractToolResultContent(result.content),
-        toolName: '',
         toolID: result.tool_use_id || '',
         durationMs,
-        inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, model: '',
-      });
+      }));
     }
   }
 

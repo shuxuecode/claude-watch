@@ -18,7 +18,7 @@ Claude Code writes detailed JSONL logs under `~/.claude/projects/` as it works â
 ## Quick Start
 
 ```bash
-npx claude-watch
+npx claude-code-watch
 ```
 
 This starts the dashboard at `http://localhost:23000` and opens it in your browser.
@@ -28,19 +28,21 @@ It will auto-discover active Claude Code sessions from `~/.claude/projects/` and
 ## Installation
 
 ```bash
-npm install -g claude-watch
+npm install -g claude-code-watch
 ```
 
 Then run:
 
 ```bash
-claude-watch
+claude-code-watch
 ```
 
 ## Usage
 
 ```
-claude-watch [OPTIONS]
+claude-code-watch [OPTIONS]
+
+Shorter alias: `cc-watch` (equivalent to `claude-code-watch`).
 
 OPTIONS:
     -p, --port <port>    HTTP port (default: 23000)
@@ -62,25 +64,25 @@ OPTIONS:
 
 ```bash
 # List recent sessions
-claude-watch -l
+claude-code-watch -l
 
 # List active sessions from last 10 minutes
-claude-watch -a -w 10m
+claude-code-watch -a -w 10m
 
 # Watch a specific session
-claude-watch -s abc123-def456
+claude-code-watch -s abc123-def456
 
 # Live-only mode (don't replay history)
-claude-watch -n
+claude-code-watch -n
 
 # Custom port and host
-claude-watch -p 8080 -h 0.0.0.0
+claude-code-watch -p 8080 -h 0.0.0.0
 
 # Limit tree to 5 most recent sessions, auto-collapse after 2m of inactivity
-claude-watch -m 5 -c 2m
+claude-code-watch -m 5 -c 2m
 
 # Debug mode: see every unknown JSONL line type
-claude-watch -D
+claude-code-watch -D
 ```
 
 ## How It Works

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>claude-watch</title>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+<link rel="stylesheet" href="vendor/github-dark.min.css">
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -269,8 +269,9 @@ body {
   <span class="sep">│</span>
   </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/4.3.0/marked.min.js"></script>
+<script src="vendor/highlight.min.js"></script>
+<script src="vendor/marked.min.js"></script>
+<script src="vendor/purify.min.js"></script>
 <script>
 // ══════════════════════════════════════════════════════════════════════════════
 // DOM refs
@@ -290,6 +291,8 @@ let ws = null;
 let reconnectTimer = null;
 let reconnectDelay = 1000;
 const MaxReconnectDelay = 30000;
+const MaxReconnectAttempts = 20;
+let reconnectAttempts = 0;
 let showTree = true;
 let autoScroll = true;
 let lastMsgTime = 0;
@@ -299,8 +302,40 @@ let sessions = [];
 let treeNodes = [];
 let treeCursor = 0;
 let streamItems = [];
-let seenToolIDs = new Set();
+const seenToolIDsKeys = [];
+const seenToolIDsSet = new Set();
+const seenToolIDsMax = 5000;
+
+function seenToolIDsHas(key) {
+  return seenToolIDsSet.has(key);
+}
+function seenToolIDsAdd(key) {
+  seenToolIDsSet.add(key);
+  seenToolIDsKeys.push(key);
+  if (seenToolIDsKeys.length > seenToolIDsMax) {
+    const evictCount = seenToolIDsKeys.length >> 1;
+    for (let i = 0; i < evictCount; i++) {
+      seenToolIDsSet.delete(seenToolIDsKeys[i]);
+    }
+    seenToolIDsKeys.splice(0, evictCount);
+  }
+}
+const toolNameMapMax = 2000;
 let toolNameMap = new Map();  // toolID -> toolName
+let toolNameMapKeys = [];
+
+function toolNameMapSet(toolID, toolName) {
+  if (toolNameMap.has(toolID)) return;
+  toolNameMap.set(toolID, toolName);
+  toolNameMapKeys.push(toolID);
+  if (toolNameMapKeys.length > toolNameMapMax) {
+    const evictCount = toolNameMapKeys.length >> 1;
+    for (let i = 0; i < evictCount; i++) {
+      toolNameMap.delete(toolNameMapKeys[i]);
+    }
+    toolNameMapKeys.splice(0, evictCount);
+  }
+}
 let filters = new Map();
 
 let showThinking = true;
@@ -313,6 +348,16 @@ let renderPending = false;
 
 let totalInput = 0, totalOutput = 0, totalCacheCreate = 0, totalCacheRead = 0;
 let contextData = {};
+
+function computeTokensFromContext() {
+  totalInput = 0; totalOutput = 0; totalCacheCreate = 0; totalCacheRead = 0;
+  for (const ctx of Object.values(contextData)) {
+    totalInput += ctx.inputTokens || 0;
+    totalOutput += ctx.outputTokens || 0;
+    totalCacheCreate += ctx.cacheCreationTokens || 0;
+    totalCacheRead += ctx.cacheReadTokens || 0;
+  }
+}
 
 let collapseAfter = 0;
 let collapseTimer = null;
@@ -349,7 +394,7 @@ marked.setOptions({ renderer: mdRenderer, breaks: true, gfm: true });
 
 function mdRender(text) {
   try {
-    return marked.parse(text);
+    return DOMPurify.sanitize(marked.parse(text));
   } catch {
     return esc(text);
   }
@@ -367,10 +412,16 @@ function connect() {
     sessionInfo.textContent = 'Connected';
     lastMsgTime = Date.now();
     reconnectDelay = 1000;
+    reconnectAttempts = 0;
     startStaleCheck();
     startActiveRefresh();
   };
   ws.onclose = () => {
+    reconnectAttempts++;
+    if (reconnectAttempts >= MaxReconnectAttempts) {
+      sessionInfo.textContent = 'Disconnected. Please refresh to reconnect.';
+      return;
+    }
     sessionInfo.textContent = 'Disconnected, reconnecting...';
     stopStaleCheck();
     if (activeRefreshTimer) { clearInterval(activeRefreshTimer); activeRefreshTimer = null; }
@@ -544,10 +595,8 @@ function handleItemBatch(items) {
 }
 
 function pushItem(item) {
-  if (item.inputTokens > 0) totalInput += item.inputTokens;
-  if (item.outputTokens > 0) totalOutput += item.outputTokens;
-  if (item.cacheCreationTokens > 0) totalCacheCreate += item.cacheCreationTokens;
-  if (item.cacheReadTokens > 0) totalCacheRead += item.cacheReadTokens;
+  // Token counts are sourced exclusively from server context messages
+  // to avoid divergence between frontend accumulation and server tracking
 
   if (item.model) {
     const s = sessions.find(s => s.id === item.sessionID);
@@ -555,14 +604,13 @@ function pushItem(item) {
   }
 
   if (item.type === 'tool_input' && item.toolID && item.toolName) {
-    toolNameMap.set(item.toolID, item.toolName);
+    toolNameMapSet(item.toolID, item.toolName);
   }
 
   if (item.toolID) {
     const key = `${item.toolID}:${item.type}`;
-    if (seenToolIDs.has(key)) return;
-    seenToolIDs.add(key);
-    if (seenToolIDs.size > 5000) seenToolIDs.clear();
+    if (seenToolIDsHas(key)) return;
+    seenToolIDsAdd(key);
   }
 
   streamItems.push(item);
@@ -639,7 +687,6 @@ function getNodeHTML(node, idx) {
   if (node.type === 'session') {
     const displayName = node.title || folderName(node.projectPath) || node.id.slice(0, 14);
     const parts = [];
-    if (node.folder) parts.push(`📂 ${esc(node.folder)}`);
     if (node.model) parts.push(`🧠 ${esc(node.model)}`);
     const activeDot = isSessionActive(node) ? '<span class="active-dot on">🟢</span>' : '<span class="active-dot off">⚪</span>';
     const subInfo = parts.length > 0 ? ` <span style="color:#6b7280;font-size:10px">${parts.join(' · ')}</span>` : '';
@@ -881,6 +928,7 @@ function refreshButtons() {
   sessionInfo.textContent = info;
 
   // Token info
+  computeTokensFromContext();
   let tokStr = '';
   if (totalInput > 0 || totalOutput > 0) {
     tokStr = `${fmtTok(totalInput)} in / ${fmtTok(totalOutput)} out`;
@@ -1155,7 +1203,7 @@ function folderName(projectPath) {
 }
 
 function esc(s) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return (s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
 }
 
 function fmtDur(ms) {

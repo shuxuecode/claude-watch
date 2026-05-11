@@ -4,11 +4,12 @@
   "description": "Web-based real-time monitor for Claude Code.",
   "main": "./src/server/server.js",
   "bin": {
-    "claude-code-watch": "./bin/claude-watch.js"
+    "claude-code-watch": "bin/claude-watch.js",
+    "cc-watch": "bin/claude-watch.js"
   },
   "scripts": {
     "start": "node bin/claude-watch.js",
-    "dev": "node --watch bin/claude-watch.js",
+    "dev": "node --watch bin/claude-watch.js --no-open",
     "test": "node --test tests/all.test.js tests/watcher.test.js tests/server.test.js"
   },
   "files": [
@@ -26,7 +27,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/shuxuecode/claude-watch"
+    "url": "git+https://github.com/shuxuecode/claude-watch.git"
   },
   "engines": {
     "node": ">=18.0.0"

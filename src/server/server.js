@@ -1,15 +1,16 @@
 'use strict';
 
-const http = require('http');
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
-const cp = require('child_process');
-const { WebSocketServer } = require('ws');
-const { Watcher, listSessions, listActiveSessions } = require('../watcher/watcher');
-const { setDebugAll, contextWindowFor, formatTokenCount } = require('../parser/parser');
+var http = require('http');
+var fs = require('fs');
+var path = require('path');
+var os = require('os');
+var cp = require('child_process');
+var readline = require('readline');
+var { WebSocketServer } = require('ws');
+var { Watcher, listSessions, listActiveSessions } = require('../watcher/watcher');
+var { setDebugAll, contextWindowFor } = require('../parser/parser');
 
-const MIME = {
+var MIME = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.js': 'application/javascript; charset=utf-8',
@@ -19,7 +20,8 @@ const MIME = {
   '.ico': 'image/x-icon',
 };
 
-const MAX_ITEM_BUFFER = 2000;
+var MAX_ITEM_BUFFER = 2000;
+var CONTEXT_STALE_MS = 30 * 60 * 1000; // 30 minutes
 
 class DashboardServer {
   constructor(options = {}) {
@@ -30,11 +32,13 @@ class DashboardServer {
     this.clients = new Set();
     this.itemBuffer = [];
     this.contextMap = new Map();
+    this._contextCleanupTimer = null;
 
     this.server = null;
     this.wss = null;
 
     setDebugAll(options.debugAll || false);
+    this.debugAll = options.debugAll || false;
   }
 
   getCtxKey(sessionID, agentID) {
@@ -59,6 +63,15 @@ class DashboardServer {
     ctx.lastActivity = Date.now();
   }
 
+  cleanupContextMap() {
+    const now = Date.now();
+    for (const [key, ctx] of this.contextMap) {
+      if (now - ctx.lastActivity > CONTEXT_STALE_MS) {
+        this.contextMap.delete(key);
+      }
+    }
+  }
+
   getContextSnapshot() {
     const result = {};
     for (const [key, ctx] of this.contextMap) {
@@ -79,7 +92,7 @@ class DashboardServer {
     const msg = JSON.stringify({ type, payload });
     for (const ws of this.clients) {
       if (ws.readyState === 1) {
-        try { ws.send(msg); } catch {}
+        try { ws.send(msg); } catch { this.clients.delete(ws); ws.terminate(); }
       }
     }
   }
@@ -114,7 +127,7 @@ class DashboardServer {
     }
 
     if (p.startsWith('/api/')) {
-      this.handleAPI(req, res, url);
+      await this.handleAPI(req, res, url);
       return;
     }
 
@@ -128,7 +141,7 @@ class DashboardServer {
     await this.serveStatic(res, resolved);
   }
 
-  handleAPI(req, res, url) {
+  async handleAPI(req, res, url) {
     const route = url.pathname.slice('/api'.length);
     const params = url.searchParams;
 
@@ -166,13 +179,13 @@ class DashboardServer {
     if (route === '/task-output') {
       const filePath = params.get('path');
       if (!filePath) { this.sendJSON(res, { error: 'Missing path param' }, 400); return; }
+      const resolved = path.resolve(filePath);
+      if (!resolved.startsWith(path.resolve(os.homedir(), '.claude', 'projects'))) {
+        this.sendJSON(res, { error: 'Access denied' }, 403);
+        return;
+      }
       try {
-        const resolved = path.resolve(filePath);
-        if (!resolved.startsWith(path.resolve(os.homedir(), '.claude', 'projects'))) {
-          this.sendJSON(res, { error: 'Access denied' }, 403);
-          return;
-        }
-        const content = fs.readFileSync(resolved, 'utf-8');
+        const content = await fs.promises.readFile(resolved, 'utf-8');
         this.sendJSON(res, { content });
       } catch (err) {
         this.sendJSON(res, { error: err.message }, 404);
@@ -228,6 +241,10 @@ class DashboardServer {
     }
   }
 
+  send(ws, type, payload) {
+    try { ws.send(JSON.stringify({ type, payload })); } catch {}
+  }
+
   sendSnapshot(ws) {
     if (!this.watcher) return;
     const sessions = this.watcher.getSessionsSnapshot().map(s => ({
@@ -245,33 +262,22 @@ class DashboardServer {
         isComplete: t.isComplete,
       })),
     }));
-    try {
-      ws.send(JSON.stringify({
-        type: 'snapshot',
-        payload: {
-          sessions,
-          autoDiscovery: this.watcher.isAutoDiscoveryEnabled(),
-        },
-      }));
-    } catch {}
+    this.send(ws, 'snapshot', {
+      sessions,
+      autoDiscovery: this.watcher.isAutoDiscoveryEnabled(),
+    });
   }
 
   sendItemBatch(ws) {
-    try {
-      ws.send(JSON.stringify({ type: 'itemBatch', payload: this.itemBuffer }));
-    } catch {}
+    this.send(ws, 'itemBatch', this.itemBuffer);
   }
 
   sendContext(ws) {
-    try {
-      ws.send(JSON.stringify({ type: 'context', payload: this.getContextSnapshot() }));
-    } catch {}
+    this.send(ws, 'context', this.getContextSnapshot());
   }
 
   sendConfig(ws) {
-    try {
-      ws.send(JSON.stringify({ type: 'config', payload: { collapseAfter: this.collapseAfterMs } }));
-    } catch {}
+    this.send(ws, 'config', { collapseAfter: this.collapseAfterMs });
   }
 
   setupWatcher(watcherOpts) {
@@ -287,9 +293,7 @@ class DashboardServer {
     w.on('item', (item) => {
       this.itemBuffer.push(item);
       if (this.itemBuffer.length > MAX_ITEM_BUFFER) {
-        const excess = this.itemBuffer.length - MAX_ITEM_BUFFER;
-        this.itemBuffer.copyWithin(0, excess);
-        this.itemBuffer.length = MAX_ITEM_BUFFER;
+        this.itemBuffer = this.itemBuffer.slice(-MAX_ITEM_BUFFER);
       }
       this.updateContext(item);
       this.broadcast('item', item);
@@ -302,6 +306,9 @@ class DashboardServer {
   }
 
   async killExistingPort(port) {
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error(`Invalid port: ${port}`);
+    }
     let cmd;
     if (process.platform === 'win32') {
       cmd = `netstat -ano | findstr :${port} | findstr LISTENING`;
@@ -312,14 +319,25 @@ class DashboardServer {
       const result = cp.execSync(cmd, { encoding: 'utf-8' }).trim();
       if (!result) return false;
       const pids = result.split('\n').map(s => s.trim()).filter(Boolean);
+
+      // Ask user for confirmation before killing
+      const confirmed = await askYesNo(`Port ${port} is occupied by process(es) ${pids.join(', ')}. Kill them? [y/N] `);
+      if (!confirmed) {
+        console.error(`Port ${port} is in use. Exiting.`);
+        process.exit(1);
+      }
+
       for (const pid of pids) {
-        try {
-          if (process.platform === 'win32') {
-            cp.execSync(`taskkill /PID ${pid} /F`, { encoding: 'utf-8' });
-          } else {
-            process.kill(parseInt(pid, 10), 'SIGKILL');
-          }
-        } catch {}
+        const parsedPid = parseInt(pid, 10);
+        if (Number.isInteger(parsedPid) && parsedPid > 0) {
+          try {
+            if (process.platform === 'win32') {
+              cp.execSync(`taskkill /PID ${parsedPid} /F`, { encoding: 'utf-8' });
+            } else {
+              process.kill(parsedPid, 'SIGKILL');
+            }
+          } catch {}
+        }
       }
       // Wait briefly for the port to be released
       await new Promise(r => setTimeout(r, 500));
@@ -330,16 +348,21 @@ class DashboardServer {
   }
 
   async start(options = {}) {
+    if (!Number.isInteger(this.port) || this.port < 1 || this.port > 65535) {
+      throw new Error(`Invalid port: ${this.port}`);
+    }
     const skipHistory = options.skipHistory || false;
     const pollMs = options.pollMs || 500;
     const activeWindow = options.activeWindow || 5 * 60 * 1000;
     const maxSessions = options.maxSessions || 0;
+    const openBrowser = options.openBrowser !== false;
 
     const watcherOpts = {
       sessionID: options.sessionID || '',
       pollInterval: pollMs,
       activeWindow,
       maxSessions,
+      debugAll: this.debugAll,
     };
 
     // Proactively kill any process occupying the port before starting
@@ -373,24 +396,29 @@ class DashboardServer {
 
     const w = this.setupWatcher(watcherOpts);
 
-    w.init().then(() => {
+    try {
+      await w.init();
       if (skipHistory) w.setSkipHistory(true);
-      w.start();
+      await w.start();
 
       // Open browser AFTER sessions are discovered, so new clients get a full snapshot
-      const url = `http://localhost:${this.port}`;
-      const platform = process.platform;
-      if (platform === 'darwin') {
-        cp.spawn('open', [url]);
-      } else if (platform === 'win32') {
-        cp.spawn('cmd', ['/c', 'start', '', url]);
-      } else {
-        cp.spawn('xdg-open', [url]);
+      if (openBrowser) {
+        const url = `http://localhost:${this.port}`;
+        const platform = process.platform;
+        if (platform === 'darwin') {
+          cp.spawn('open', [url]);
+        } else if (platform === 'win32') {
+          cp.spawn('cmd', ['/c', 'start', '', url]);
+        } else {
+          cp.spawn('xdg-open', [url]);
+        }
       }
-    }).catch(err => {
+    } catch (err) {
       console.error('Watcher init error:', err.message);
       process.exit(1);
-    });
+    }
+
+    this._contextCleanupTimer = setInterval(() => this.cleanupContextMap(), CONTEXT_STALE_MS);
 
     this.server.listen(this.port, this.host, () => {
       const url = `http://localhost:${this.port}`;
@@ -405,6 +433,7 @@ class DashboardServer {
   }
 
   stop() {
+    if (this._contextCleanupTimer) clearInterval(this._contextCleanupTimer);
     if (this.wss) this.wss.close();
     if (this.server) this.server.close();
     if (this.watcher) this.watcher.stop();
@@ -415,6 +444,16 @@ class DashboardServer {
 async function startServer(options = {}) {
   const ds = new DashboardServer(options);
   return ds.start(options);
+}
+
+function askYesNo(prompt) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise(resolve => {
+    rl.question(prompt, answer => {
+      rl.close();
+      resolve(/^y(es)?$/i.test(answer.trim()));
+    });
+  });
 }
 
 module.exports = { DashboardServer, startServer };

@@ -2,10 +2,13 @@
 
 'use strict';
 
+const https = require('https');
+const cp = require('child_process');
+
 const { startServer } = require('../src/server/server');
 const { listSessions, listActiveSessions } = require('../src/watcher/watcher');
 
-const VERSION = '0.0.1';
+const { version: VERSION } = require('../package.json');
 
 function printHelp() {
   console.log(`claude-watch v${VERSION}
@@ -15,6 +18,7 @@ to a web browser.
 
 USAGE:
     claude-watch [OPTIONS]
+    claude-watch update       Check for updates and install latest
 
 OPTIONS:
     -p, --port <port>    HTTP port (default: 23000)
@@ -28,12 +32,100 @@ OPTIONS:
     -c <dur>    Auto-collapse sessions inactive for this duration (e.g. 2m)
     -D          Debug: show raw type:subtype for every JSONL line we'd drop
     --poll <ms> Polling interval in milliseconds (default: 500)
+    --no-open  Do not auto-open browser on start
     -v          Show version
     --help      Show this help
 
 ENVIRONMENT:
     CLAUDE_HOME     Override Claude config directory (default: ~/.claude)
 `);
+}
+
+function compareVersions(a, b) {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    if (pa[i] > pb[i]) return 1;
+    if (pa[i] < pb[i]) return -1;
+  }
+  return 0;
+}
+
+function fetchLatestVersion() {
+  return new Promise((resolve, reject) => {
+    const opts = {
+      hostname: 'registry.npmjs.org',
+      path: '/claude-code-watch/latest',
+      timeout: 5000,
+    };
+
+    const req = https.get(opts, (res) => {
+      if (res.statusCode !== 200) { reject(new Error(`HTTP ${res.statusCode}`)); return; }
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(data);
+          resolve(json.version);
+        } catch (err) {
+          reject(err);
+        }
+      });
+    });
+
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+    req.end();
+  });
+}
+
+function checkForUpdate() {
+  fetchLatestVersion().then((latest) => {
+    if (compareVersions(latest, VERSION) > 0) {
+      console.log(`\n  New version available: v${latest} (current: v${VERSION})`);
+      console.log('  Updating in background...\n');
+      const child = cp.spawn('npm', ['install', '-g', 'claude-code-watch@latest'], {
+        stdio: 'ignore',
+        detached: true,
+      });
+      child.unref();
+      child.on('exit', (code) => {
+        if (code === 0) {
+          console.log(`  Updated to v${latest}. Changes take effect on next start.\n`);
+        }
+      });
+    }
+  }).catch(() => { /* network unavailable, skip */ });
+}
+
+async function runUpdate() {
+  console.log(`  Current version: v${VERSION}`);
+  console.log('  Checking for latest version...\n');
+
+  let latest;
+  try {
+    latest = await fetchLatestVersion();
+  } catch (err) {
+    console.error(`  Failed to check for updates: ${err.message}`);
+    process.exit(1);
+  }
+
+  if (compareVersions(latest, VERSION) <= 0) {
+    console.log(`  Already up to date (v${VERSION}).`);
+    return;
+  }
+
+  console.log(`  Latest version: v${latest}`);
+  console.log('  Running npm install -g claude-code-watch@latest...\n');
+
+  const { execSync } = require('child_process');
+  try {
+    execSync('npm install -g claude-code-watch@latest', { stdio: 'inherit' });
+    console.log(`\n  Updated to v${latest}. Restart to use the new version.`);
+  } catch {
+    console.error('\n  Update failed. Try manually: npm install -g claude-code-watch@latest');
+    process.exit(1);
+  }
 }
 
 function parseDuration(s) {
@@ -62,6 +154,7 @@ async function main() {
     maxSessions: 0,
     collapseAfter: 0,
     debugAll: false,
+    openBrowser: true,
   };
 
   // First pass: collect all option values
@@ -74,7 +167,7 @@ async function main() {
         options.skipHistory = true;
         break;
       case '-p':
-      case '--port':
+      case '--port': {
         if (i + 1 >= args.length || args[i + 1].startsWith('-')) {
           console.error(`Error: ${args[i]} requires a port number`);
           process.exit(1);
@@ -86,6 +179,7 @@ async function main() {
         }
         options.port = pv;
         break;
+      }
       case '-h':
       case '--host':
         if (i + 1 >= args.length || args[i + 1].startsWith('-')) {
@@ -116,6 +210,9 @@ async function main() {
         break;
       case '--poll':
         options.pollMs = parseInt(args[++i], 10) || 500;
+        break;
+      case '--no-open':
+        options.openBrowser = false;
         break;
       default:
         break;
@@ -169,6 +266,14 @@ async function main() {
       case '--help':
         printHelp();
         return;
+      case 'update':
+        await runUpdate();
+        return;
+      // Skip option flags already handled in first pass
+      case '-s': case '-n': case '-p': case '--port':
+      case '-h': case '--host': case '-w': case '-c':
+      case '-m': case '-D': case '--poll': case '--no-open':
+        break;
       default:
         if (args[i].startsWith('-')) {
           console.error(`Unknown option: ${args[i]}`);
@@ -178,6 +283,7 @@ async function main() {
     }
   }
 
+  checkForUpdate();
   startServer(options);
 }
 

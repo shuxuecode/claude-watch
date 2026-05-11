@@ -1,22 +1,24 @@
 'use strict';
 
-const fs = require('fs');
-const fsp = require('fs/promises');
-const path = require('path');
-const os = require('os');
-const chokidar = require('chokidar');
-const { parseLine, AgentIDDisplayLength } = require('../parser/parser');
+var fs = require('fs');
+var fsp = require('fs/promises');
+var path = require('path');
+var os = require('os');
+var readline = require('readline');
+var chokidar = require('chokidar');
+var { EventEmitter } = require('events');
+var { parseLine, AgentIDDisplayLength } = require('../parser/parser');
 
 // ============================================================================
 // Constants
 // ============================================================================
 
-const AutoSkipLineThreshold = 100;
-const KeepRecentLines = 10;
-const CleanupInterval = 5 * 60 * 1000;
-const FsnotifyDiscoveryInterval = 60 * 1000;
-const RecentActivityThreshold = 2 * 60 * 1000;
-const DebounceInterval = 50;
+var AutoSkipLineThreshold = 100;
+var KeepRecentLines = 10;
+var CleanupInterval = 5 * 60 * 1000;
+var FsnotifyDiscoveryInterval = 60 * 1000;
+var RecentActivityThreshold = 2 * 60 * 1000;
+var DebounceInterval = 50;
 
 // ============================================================================
 // Helpers
@@ -44,7 +46,9 @@ function resolveProjectPath(encoded) {
     try {
       fs.accessSync(testPath);
       return `${pathPart}/${dirPart}`;
-    } catch {}
+    } catch {
+      // Path doesn't exist, try next combination
+    }
   }
 
   // Fallback to naive conversion
@@ -60,10 +64,10 @@ function isMainSessionFile(filePath, stats) {
   return true;
 }
 
-function readAgentType(jsonlPath) {
+async function readAgentType(jsonlPath) {
   const metaPath = jsonlPath.replace(/\.jsonl$/, '.meta.json');
   try {
-    const data = fs.readFileSync(metaPath, 'utf-8');
+    const data = await fsp.readFile(metaPath, 'utf-8');
     const meta = JSON.parse(data);
     return meta.agentType || '';
   } catch {
@@ -102,8 +106,8 @@ class BackgroundTask {
 // Watcher class
 // ============================================================================
 
-class Watcher extends require('events').EventEmitter {
-  constructor({ sessionID, pollInterval, activeWindow, maxSessions } = {}) {
+class Watcher extends EventEmitter {
+  constructor({ sessionID, pollInterval, activeWindow, maxSessions, debugAll } = {}) {
     super();
     this.claudeDir = getClaudeProjectsDir();
     this.pollInterval = pollInterval || 500;
@@ -120,12 +124,15 @@ class Watcher extends require('events').EventEmitter {
     this.fileContexts = new Map();
     this.debounceTimers = new Map();
     this.pendingSubagents = new Map();
+    this._readLocks = new Map();
+    this._pollRunning = false;
 
     // Intervals / timers
     this._cleanupTimer = null;
     this._discoveryTimer = null;
     this._pollTimer = null;
     this._running = false;
+    this.debug = debugAll || false;
 
     this._sessionID = sessionID || '';
   }
@@ -201,7 +208,7 @@ class Watcher extends require('events').EventEmitter {
     return this.buildSession(mainFile);
   }
 
-  buildSession(mainFile) {
+  async buildSession(mainFile) {
     const base = path.basename(mainFile);
     const id = base.replace(/\.jsonl$/, '');
     const projectDir = path.basename(path.dirname(mainFile));
@@ -212,19 +219,21 @@ class Watcher extends require('events').EventEmitter {
     // Find subagent files
     const subagentDir = path.join(path.dirname(mainFile), id, 'subagents');
     try {
-      const entries = fs.readdirSync(subagentDir);
+      const entries = await fsp.readdir(subagentDir);
       for (const entry of entries) {
         if (entry.endsWith('.jsonl')) {
           const agentID = entry.replace(/^agent-/, '').replace(/\.jsonl$/, '');
           const jsonlPath = path.join(subagentDir, entry);
           session.subagents[agentID] = jsonlPath;
-          const agentType = readAgentType(jsonlPath);
+          const agentType = await readAgentType(jsonlPath);
           if (agentType) {
             session.subagentTypes[agentID] = agentType;
           }
         }
       }
-    } catch {}
+    } catch (err) {
+      if (this.debug) console.error('[watcher] buildSession subagent scan error:', err.message);
+    }
 
     return session;
   }
@@ -237,11 +246,11 @@ class Watcher extends require('events').EventEmitter {
       await this._walkDir(this.claudeDir, (filePath, stats) => {
         if (!isMainSessionFile(filePath, stats)) return;
         if (now - stats.mtimeMs > this.activeWindow) return;
-
-        const session = this.buildSession(filePath);
-        discovered.push({ session, modTime: stats.mtimeMs });
+        discovered.push({ filePath, modTime: stats.mtimeMs });
       });
-    } catch {}
+    } catch (err) {
+      if (this.debug) console.error('[watcher] discoverActiveSessions error:', err.message);
+    }
 
     // Sort by most recent first
     discovered.sort((a, b) => b.modTime - a.modTime);
@@ -250,21 +259,22 @@ class Watcher extends require('events').EventEmitter {
     }
 
     for (const d of discovered) {
-      if (!this.sessions.has(d.session.id)) {
-        this.sessions.set(d.session.id, d.session);
+      const session = await this.buildSession(d.filePath);
+      if (!this.sessions.has(session.id)) {
+        this.sessions.set(session.id, session);
 
         // Broadcast so connected clients learn about the new session
-        this.emit('broadcast', 'newSession', { sessionID: d.session.id, projectPath: d.session.projectPath });
-        for (const [agentID, agentType] of Object.entries(d.session.subagentTypes)) {
-          this.emit('broadcast', 'newAgent', { sessionID: d.session.id, agentID, agentType });
+        this.emit('broadcast', 'newSession', { sessionID: session.id, projectPath: session.projectPath });
+        for (const [agentID, agentType] of Object.entries(session.subagentTypes)) {
+          this.emit('broadcast', 'newAgent', { sessionID: session.id, agentID, agentType });
         }
 
-        const pending = this.pendingSubagents.get(d.session.id);
+        const pending = this.pendingSubagents.get(session.id);
         if (pending) {
-          this.pendingSubagents.delete(d.session.id);
+          this.pendingSubagents.delete(session.id);
           for (const sp of pending) {
             const agentID = path.basename(sp).replace(/^agent-/, '').replace(/\.jsonl$/, '');
-            this._registerSubagent(d.session, d.session.id, agentID, sp);
+            await this._registerSubagent(session, session.id, agentID, sp);
           }
         }
       }
@@ -279,14 +289,14 @@ class Watcher extends require('events').EventEmitter {
   // Start / Stop
   // =========================================================================
 
-  start() {
+  async start() {
     if (this._running) return;
     this._running = true;
 
     if (this.useFsnotify) {
-      this._startFsnotify();
+      await this._startFsnotify();
     } else {
-      this._startPolling();
+      await this._startPolling();
     }
   }
 
@@ -309,7 +319,7 @@ class Watcher extends require('events').EventEmitter {
   // Chokidar (fsnotify) mode
   // =========================================================================
 
-  _startFsnotify() {
+  async _startFsnotify() {
     // Set up watches
     try {
       if (fs.existsSync(this.claudeDir)) {
@@ -317,10 +327,12 @@ class Watcher extends require('events').EventEmitter {
       } else {
         this._watchAncestor(this.claudeDir);
       }
-    } catch {}
+    } catch (err) {
+      if (this.debug) console.error('[watcher] start watch setup error:', err.message);
+    }
 
     const sessions = this.getSessionsSnapshot();
-    this._initializeSessionReading(sessions);
+    await this._initializeSessionReading(sessions);
     for (const session of sessions) {
       this._registerSessionWatches(session);
     }
@@ -360,7 +372,7 @@ class Watcher extends require('events').EventEmitter {
     }
   }
 
-  _addDirectoryWatches(root, maxDepth = 20) {
+  _addDirectoryWatches(root, maxDepth = 10) {
     const addRecursive = (dir, depth) => {
       if (depth > maxDepth) return;
       try {
@@ -405,8 +417,12 @@ class Watcher extends require('events').EventEmitter {
         try {
           fs.accessSync(this.claudeDir);
           this._addDirectoryWatches(this.claudeDir);
-          this.discoverActiveSessions();
-        } catch {}
+          this.discoverActiveSessions().catch(err => {
+            if (this.debug) console.error('[watcher] discoverActiveSessions error:', err.message);
+          });
+        } catch (err) {
+          if (this.debug) console.error('[watcher] _handleFsCreate directory scan error:', err.message);
+        }
       }
       return;
     }
@@ -415,7 +431,7 @@ class Watcher extends require('events').EventEmitter {
       if (p.includes('/subagents/')) {
         this._handleNewSubagentFile(p);
       } else if (this.watchActive) {
-        this._handleNewSessionFile(p);
+        this._handleNewSessionFile(p); // fire-and-forget, session will be discovered on next poll
       }
       return;
     }
@@ -453,10 +469,14 @@ class Watcher extends require('events').EventEmitter {
     if (existing) {
       clearTimeout(existing);
     }
-    const timer = setTimeout(() => {
+    const timer = setTimeout(async () => {
       this.debounceTimers.delete(p);
       const agentType = this._lookupAgentType(ctx.sessionID, ctx.agentID);
-      this._readFile(p, ctx.sessionID, ctx.agentID, agentType);
+      try {
+        await this._readFile(p, ctx.sessionID, ctx.agentID, agentType);
+      } catch (err) {
+        this.emit('error', err);
+      }
     }, DebounceInterval);
     this.debounceTimers.set(p, timer);
   }
@@ -465,15 +485,15 @@ class Watcher extends require('events').EventEmitter {
   // New session handlers
   // =========================================================================
 
-  _handleNewSessionFile(p) {
+  async _handleNewSessionFile(p) {
     let stats;
-    try { stats = fs.statSync(p); } catch { return; }
+    try { stats = await fsp.stat(p); } catch { return; }
     if (!isMainSessionFile(p, stats)) return;
 
     // Only accept sessions within the active window
     if (Date.now() - stats.mtimeMs > this.activeWindow) return;
 
-    const session = this.buildSession(p);
+    const session = await this.buildSession(p);
     if (this.sessions.has(session.id)) return;
 
     this.sessions.set(session.id, session);
@@ -510,11 +530,11 @@ class Watcher extends require('events').EventEmitter {
       return;
     }
 
-    this._registerSubagent(session, sessionID, agentID, p);
+    this._registerSubagent(session, sessionID, agentID, p); // fire-and-forget, event handler context
   }
 
-  _registerSubagent(session, sessionID, agentID, p) {
-    const agentType = readAgentType(p);
+  async _registerSubagent(session, sessionID, agentID, p) {
+    const agentType = await readAgentType(p);
     if (session.subagents[agentID]) return;
 
     session.subagents[agentID] = p;
@@ -524,7 +544,7 @@ class Watcher extends require('events').EventEmitter {
     this.emit('broadcast', 'newAgent', { sessionID, agentID, agentType });
   }
 
-  _handleNewToolResultFile(p) {
+  async _handleNewToolResultFile(p) {
     const toolID = path.basename(p).replace(/\.txt$/, '');
     const toolResultsDir = path.dirname(p);
     const sessionDir = path.dirname(toolResultsDir);
@@ -534,8 +554,8 @@ class Watcher extends require('events').EventEmitter {
     if (!session) return;
     if (session.backgroundTasks[toolID]) return;
 
-    const parentAgentID = this._findBackgroundTaskParent(session, toolID);
-    const isComplete = this._isBackgroundTaskComplete(session, toolID);
+    const parentAgentID = await this._findBackgroundTaskParent(session, toolID);
+    const isComplete = await this._isBackgroundTaskComplete(session, toolID);
 
     const task = new BackgroundTask(toolID, parentAgentID, 'Background Task', p, isComplete);
     session.backgroundTasks[toolID] = task;
@@ -561,22 +581,29 @@ class Watcher extends require('events').EventEmitter {
   // Periodic checking (polling fallback + fsnotify discovery)
   // =========================================================================
 
-  _checkForNewSessions() {
+  async _checkForNewSessions() {
     const now = Date.now();
-    const candidates = [];
+    const fileCandidates = [];
 
     try {
-      _walkDirSyncSimple(this.claudeDir, (filePath, stats) => {
+      await this._walkDir(this.claudeDir, (filePath, stats) => {
         if (!isMainSessionFile(filePath, stats)) return;
         if (now - stats.mtimeMs > this.activeWindow) return;
 
         const id = path.basename(filePath).replace(/\.jsonl$/, '');
         if (this.sessions.has(id)) return;
 
-        const session = this.buildSession(filePath);
-        candidates.push({ session, modTime: stats.mtimeMs });
+        fileCandidates.push({ filePath, modTime: stats.mtimeMs });
       });
-    } catch {}
+    } catch (err) {
+      if (this.debug) console.error('[watcher] _checkForNewSessions error:', err.message);
+    }
+
+    const candidates = [];
+    for (const fc of fileCandidates) {
+      const session = await this.buildSession(fc.filePath);
+      candidates.push({ session, modTime: fc.modTime });
+    }
 
     candidates.sort((a, b) => b.modTime - a.modTime);
 
@@ -601,16 +628,16 @@ class Watcher extends require('events').EventEmitter {
         this.pendingSubagents.delete(c.session.id);
         for (const sp of pending) {
           const agentID = path.basename(sp).replace(/^agent-/, '').replace(/\.jsonl$/, '');
-          this._registerSubagent(c.session, c.session.id, agentID, sp);
+          await this._registerSubagent(c.session, c.session.id, agentID, sp);
         }
       }
     }
   }
 
-  _checkForNewSubagents(session) {
+  async _checkForNewSubagents(session) {
     const subagentDir = path.join(path.dirname(session.mainFile), session.id, 'subagents');
     let entries;
-    try { entries = fs.readdirSync(subagentDir); } catch { return; }
+    try { entries = await fsp.readdir(subagentDir); } catch { return; }
 
     for (const entry of entries) {
       if (!entry.endsWith('.jsonl')) continue;
@@ -618,18 +645,18 @@ class Watcher extends require('events').EventEmitter {
       if (session.subagents[agentID]) continue;
 
       const agentPath = path.join(subagentDir, entry);
-      const agentType = readAgentType(agentPath);
+      const agentType = await readAgentType(agentPath);
       session.subagents[agentID] = agentPath;
       if (agentType) session.subagentTypes[agentID] = agentType;
 
-      this.emit('newAgent', { sessionID: session.id, agentID, agentType });
+      this.emit('broadcast', 'newAgent', { sessionID: session.id, agentID, agentType });
     }
   }
 
-  _checkForBackgroundTasks(session) {
+  async _checkForBackgroundTasks(session) {
     const toolResultsDir = path.join(path.dirname(session.mainFile), session.id, 'tool-results');
     let entries;
-    try { entries = fs.readdirSync(toolResultsDir); } catch { return; }
+    try { entries = await fsp.readdir(toolResultsDir); } catch { return; }
 
     for (const entry of entries) {
       if (!entry.endsWith('.txt')) continue;
@@ -637,8 +664,8 @@ class Watcher extends require('events').EventEmitter {
       if (session.backgroundTasks[toolID]) continue;
 
       const outputPath = path.join(toolResultsDir, entry);
-      const parentAgentID = this._findBackgroundTaskParent(session, toolID);
-      const isComplete = this._isBackgroundTaskComplete(session, toolID);
+      const parentAgentID = await this._findBackgroundTaskParent(session, toolID);
+      const isComplete = await this._isBackgroundTaskComplete(session, toolID);
 
       const task = new BackgroundTask(toolID, parentAgentID, 'Background Task', outputPath, isComplete);
       session.backgroundTasks[toolID] = task;
@@ -654,27 +681,27 @@ class Watcher extends require('events').EventEmitter {
     }
   }
 
-  _findBackgroundTaskParent(session, toolID) {
+  async _findBackgroundTaskParent(session, toolID) {
     const entry = session.toolIndex.get(toolID);
     if (entry) return entry.parentAgentID || '';
     if (!session.toolIndexPopulated) {
-      this._populateToolIndex(session);
+      await this._populateToolIndex(session);
     }
     const cached = session.toolIndex.get(toolID);
     return cached ? (cached.parentAgentID || '') : '';
   }
 
-  _isBackgroundTaskComplete(session, toolID) {
+  async _isBackgroundTaskComplete(session, toolID) {
     const entry = session.toolIndex.get(toolID);
     if (entry) return entry.hasResult;
     if (!session.toolIndexPopulated) {
-      this._populateToolIndex(session);
+      await this._populateToolIndex(session);
     }
     const cached = session.toolIndex.get(toolID);
     return cached ? cached.hasResult : false;
   }
 
-  _populateToolIndex(session) {
+  async _populateToolIndex(session) {
     if (session.toolIndexPopulated) return;
     session.toolIndexPopulated = true;
     const files = [
@@ -685,8 +712,10 @@ class Watcher extends require('events').EventEmitter {
     for (const { path: filePath, agentID } of files) {
       if (!filePath) continue;
       try {
-        const content = fs.readFileSync(filePath, 'utf-8');
-        for (const line of content.split('\n')) {
+        const input = fs.createReadStream(filePath, { encoding: 'utf-8' });
+        const rl = readline.createInterface({ input, crlfDelay: Infinity });
+
+        for await (const line of rl) {
           if (!line.includes('"tool_')) continue;
 
           if (line.includes('"tool_use"')) {
@@ -718,7 +747,9 @@ class Watcher extends require('events').EventEmitter {
             }
           }
         }
-      } catch {}
+      } catch (err) {
+        if (this.debug) console.error('[watcher] _populateToolIndex error reading', filePath + ':', err.message);
+      }
     }
   }
 
@@ -726,13 +757,16 @@ class Watcher extends require('events').EventEmitter {
   // Polling mode
   // =========================================================================
 
-  _startPolling() {
+  async _startPolling() {
     const sessions = this.getSessionsSnapshot();
-    this._initializeSessionReading(sessions);
+    await this._initializeSessionReading(sessions);
 
     this._pollTimer = setInterval(() => {
-      if (!this._running) return;
-      this._handlePollTick();
+      if (!this._running || this._pollRunning) return;
+      this._pollRunning = true;
+      this._handlePollTick()
+        .then(() => { this._pollRunning = false; })
+        .catch(() => { this._pollRunning = false; });
     }, this.pollInterval);
 
     this._cleanupTimer = setInterval(() => {
@@ -741,29 +775,34 @@ class Watcher extends require('events').EventEmitter {
     }, CleanupInterval);
   }
 
-  _handlePollTick() {
+  async _handlePollTick() {
     if (this.watchActive) {
-      this._checkForNewSessions();
+      await this._checkForNewSessions();
     }
-    for (const session of this.getSessionsSnapshot()) {
-      this._checkForNewSubagents(session);
-      this._checkForBackgroundTasks(session);
-      this._readSessionFiles(session);
-    }
+    const sessions = this.getSessionsSnapshot();
+    await Promise.all(sessions.map(s => this._processSessionTick(s)));
+  }
+
+  async _processSessionTick(session) {
+    await Promise.all([
+      this._checkForNewSubagents(session),
+      this._checkForBackgroundTasks(session),
+    ]);
+    await this._readSessionFiles(session);
   }
 
   // =========================================================================
   // File reading
   // =========================================================================
 
-  _initializeSessionReading(sessions) {
+  async _initializeSessionReading(sessions) {
     let shouldSkip = this.skipHistory;
     if (!shouldSkip) {
       let totalLines = 0;
       for (const session of sessions) {
-        totalLines += this._countFileLines(session.mainFile);
+        totalLines += await this._countFileLines(session.mainFile);
         for (const agentPath of Object.values(session.subagents)) {
-          totalLines += this._countFileLines(agentPath);
+          totalLines += await this._countFileLines(agentPath);
         }
       }
       shouldSkip = totalLines > AutoSkipLineThreshold;
@@ -771,35 +810,34 @@ class Watcher extends require('events').EventEmitter {
 
     if (shouldSkip) {
       for (const session of sessions) {
-        this._skipToEndOfFiles(session);
-        this._readSessionFiles(session);
+        await this._skipToEndOfFiles(session);
+        await this._readSessionFiles(session);
       }
     } else {
       for (const session of sessions) {
-        this._readSessionFiles(session);
+        await this._readSessionFiles(session);
       }
     }
   }
 
-  _skipToEndOfFiles(session) {
-    const mainPos = this._findPositionForLastNLines(session.mainFile, KeepRecentLines);
+  async _skipToEndOfFiles(session) {
+    const mainPos = await this._findPositionForLastNLines(session.mainFile, KeepRecentLines);
     this.filePositions.set(session.mainFile, mainPos);
 
     for (const agentPath of Object.values(session.subagents)) {
-      const pos = this._findPositionForLastNLines(agentPath, KeepRecentLines);
+      const pos = await this._findPositionForLastNLines(agentPath, KeepRecentLines);
       this.filePositions.set(agentPath, pos);
     }
   }
 
-  _findPositionForLastNLines(filePath, n) {
+  async _findPositionForLastNLines(filePath, n) {
     try {
-      const stat = fs.statSync(filePath);
+      const stat = await fsp.stat(filePath);
       const fileSize = stat.size;
       if (fileSize === 0) return 0;
 
-      let fd;
+      const handle = await fsp.open(filePath, 'r');
       try {
-        fd = fs.openSync(filePath, 'r');
         const chunkSize = 8192;
         const buf = Buffer.alloc(chunkSize);
         let newlineCount = 0;
@@ -809,9 +847,9 @@ class Watcher extends require('events').EventEmitter {
         while (position > 0 && newlineCount <= n) {
           const readLen = Math.min(chunkSize, position);
           position -= readLen;
-          fs.readSync(fd, buf, 0, readLen, position);
+          const { bytesRead } = await handle.read(buf, 0, readLen, position);
 
-          for (let i = readLen - 1; i >= 0; i--) {
+          for (let i = bytesRead - 1; i >= 0; i--) {
             if (buf[i] === 0x0A) {
               newlineCount++;
               if (newlineCount === n) {
@@ -825,130 +863,165 @@ class Watcher extends require('events').EventEmitter {
         if (newlineCount < n) return 0;
         return lastNewlinePos;
       } finally {
-        if (fd !== undefined) try { fs.closeSync(fd); } catch {}
+        await handle.close();
       }
     } catch {
       return 0;
     }
   }
 
-  _readSessionFiles(session) {
-    this._readFile(session.mainFile, session.id, '', '');
+  async _readSessionFiles(session) {
+    const reads = [this._readFile(session.mainFile, session.id, '', '')];
     for (const [agentID, agentPath] of Object.entries(session.subagents)) {
       const agentType = session.subagentTypes[agentID] || '';
-      this._readFile(agentPath, session.id, agentID, agentType);
+      reads.push(this._readFile(agentPath, session.id, agentID, agentType));
     }
+    await Promise.all(reads);
   }
 
-  _readFile(filePath, sessionID, agentID, agentType) {
-    let fd;
+  async _readFile(filePath, sessionID, agentID, agentType) {
+    // Serialize reads per file to prevent concurrent access
+    const prev = this._readLocks.get(filePath) || Promise.resolve();
+    let resolveLock;
+    const lock = new Promise(r => { resolveLock = r; });
+    this._readLocks.set(filePath, lock);
+
     try {
-      fd = fs.openSync(filePath, 'r');
-      const pos = this.filePositions.get(filePath) || 0;
-      const stats = fs.fstatSync(fd);
-      if (pos >= stats.size) return;
+      await prev;
 
-      const readLen = stats.size - pos;
-      const buf = Buffer.alloc(readLen);
-      const bytesRead = fs.readSync(fd, buf, 0, readLen, pos);
-      if (bytesRead === 0) return;
+      let handle;
+      let newPos = this.filePositions.get(filePath) || 0;
+      try {
+        handle = await fsp.open(filePath, 'r');
+        const pos = this.filePositions.get(filePath) || 0;
+        const stats = await handle.stat();
+        if (pos >= stats.size) { await handle.close(); handle = null; return; }
 
-      let newPos = pos;
-      const content = bytesRead < readLen ? buf.toString('utf-8', 0, bytesRead) : buf.toString('utf-8');
-      const lines = content.split('\n');
+        const readLen = stats.size - pos;
+        const buf = Buffer.alloc(readLen);
+        const { bytesRead } = await handle.read(buf, 0, readLen, pos);
+        if (bytesRead === 0) { await handle.close(); handle = null; return; }
 
-      // Check whether the file has grown since we read it.
-      // If yes, the last line may be incomplete (no trailing newline yet).
-      let currentSize;
-      try { currentSize = fs.fstatSync(fd).size; } catch { currentSize = stats.size; }
-      const fileGrew = currentSize > pos + bytesRead;
+        newPos = pos;
+        const content = bytesRead < readLen ? buf.toString('utf-8', 0, bytesRead) : buf.toString('utf-8');
+        const rawLines = content.split('\n');
 
-      for (let i = 0; i < lines.length; i++) {
-        const isLast = i === lines.length - 1;
-        const rawLine = lines[i];
+        // Detect Windows-style CRLF line endings
+        const firstNl = content.indexOf('\n');
+        const crlf = firstNl > 0 && content[firstNl - 1] === '\r';
+        const nlLen = crlf ? 2 : 1;
 
-        // Trailing empty string after final newline — already processed
-        if (isLast && rawLine === '' && content.endsWith('\n')) {
-          continue;
-        }
+        let currentSize;
+        try { currentSize = (await handle.stat()).size; } catch { currentSize = stats.size; }
+        const fileGrew = currentSize > pos + bytesRead;
 
-        // File has grown: last line may be missing its newline, defer it
-        if (isLast && fileGrew) {
-          continue;
-        }
+        await handle.close();
+        handle = null;
 
-        // Advance file position (only for lines we actually consume)
-        newPos += Buffer.byteLength(rawLine, 'utf-8');
-        if (!isLast) newPos += 1;
+        for (let i = 0; i < rawLines.length; i++) {
+          const isLast = i === rawLines.length - 1;
+          let rawLine = rawLines[i];
 
-        if (!rawLine.trim()) continue;
-
-        const items = parseLine(rawLine);
-        for (const item of items) {
-          // Set session ID
-          item.sessionID = sessionID;
-
-          // Set agent ID and name from context
-          if (agentID) {
-            if (!item.agentID) item.agentID = agentID;
-            if (agentType) {
-              const idx = agentType.lastIndexOf(':');
-              if (idx >= 0 && idx < agentType.length - 1) {
-                item.agentName = agentType.slice(idx + 1);
-              } else {
-                item.agentName = agentType;
-              }
-            } else if (!item.agentName || item.agentName.startsWith('Agent-')) {
-              item.agentName = `Agent-${agentID.slice(0, Math.min(AgentIDDisplayLength, agentID.length))}`;
-            }
+          // Trailing empty line after a final newline — skip it, advance position
+          if (isLast && rawLine === '' && content.endsWith('\n')) {
+            newPos += nlLen;
+            continue;
           }
 
-          // Populate tool index for O(1) lookups
-          if (item.toolID) {
-            const session = this.sessions.get(sessionID);
-            if (session) {
-              const existing = session.toolIndex.get(item.toolID);
-              if (item.type === 'tool_output') {
-                if (existing) {
-                  existing.hasResult = true;
+          // Last line may be incomplete if file grew mid-read or lacks a trailing newline
+          if (isLast && !content.endsWith('\n')) {
+            // Don't process this line, don't advance position past it.
+            // Next read will re-read from the current newPos and get the complete line.
+            continue;
+          }
+
+          // Strip trailing \r for clean line processing (Windows CRLF)
+          if (crlf && rawLine.endsWith('\r')) {
+            rawLine = rawLine.slice(0, -1);
+          }
+
+          newPos += Buffer.byteLength(rawLine, 'utf-8');
+          newPos += nlLen;
+
+          if (!rawLine.trim()) continue;
+
+          const items = parseLine(rawLine);
+          for (const item of items) {
+            item.sessionID = sessionID;
+
+            if (agentID) {
+              if (!item.agentID) item.agentID = agentID;
+              if (agentType) {
+                const idx = agentType.lastIndexOf(':');
+                if (idx >= 0 && idx < agentType.length - 1) {
+                  item.agentName = agentType.slice(idx + 1);
                 } else {
-                  session.toolIndex.set(item.toolID, { toolName: '', parentAgentID: agentID || '', hasResult: true });
+                  item.agentName = agentType;
                 }
-              } else if (item.type === 'tool_input' && !existing) {
-                session.toolIndex.set(item.toolID, { toolName: item.toolName || '', parentAgentID: agentID || '', hasResult: false });
+              } else if (!item.agentName || item.agentName.startsWith('Agent-')) {
+                item.agentName = `Agent-${agentID.slice(0, Math.min(AgentIDDisplayLength, agentID.length))}`;
               }
             }
-          }
 
-          this.emit('item', item);
+            if (item.toolID) {
+              const session = this.sessions.get(sessionID);
+              if (session) {
+                const existing = session.toolIndex.get(item.toolID);
+                if (item.type === 'tool_output') {
+                  if (existing) {
+                    existing.hasResult = true;
+                  } else {
+                    session.toolIndex.set(item.toolID, { toolName: '', parentAgentID: agentID || '', hasResult: true });
+                  }
+                } else if (item.type === 'tool_input' && !existing) {
+                  session.toolIndex.set(item.toolID, { toolName: item.toolName || '', parentAgentID: agentID || '', hasResult: false });
+                }
+              }
+            }
+
+            this.emit('item', item);
+          }
+        }
+
+        this.filePositions.set(filePath, Math.min(newPos, stats.size));
+      } catch (err) {
+        if (newPos !== undefined) {
+          this.filePositions.set(filePath, newPos);
+        }
+        this.emit('error', err);
+      } finally {
+        if (handle) {
+          try { await handle.close(); } catch {}
         }
       }
-
-      this.filePositions.set(filePath, Math.min(newPos, stats.size));
-    } catch {} finally {
-      if (fd !== undefined) {
-        try { fs.closeSync(fd); } catch {}
+    } finally {
+      resolveLock();
+      if (this._readLocks.get(filePath) === lock) {
+        this._readLocks.delete(filePath);
       }
     }
   }
 
-  _countFileLines(filePath) {
+  async _countFileLines(filePath) {
     try {
-      const stat = fs.statSync(filePath);
+      const stat = await fsp.stat(filePath);
       if (stat.size === 0) return 0;
-      const fd = fs.openSync(filePath, 'r');
+      const handle = await fsp.open(filePath, 'r');
       const buf = Buffer.alloc(8192);
       let count = 0;
       let pos = 0;
-      while (pos < stat.size) {
-        const readLen = Math.min(8192, stat.size - pos);
-        const bytesRead = fs.readSync(fd, buf, 0, readLen, pos);
-        for (let i = 0; i < bytesRead; i++) {
-          if (buf[i] === 0x0A) count++;
+      try {
+        while (pos < stat.size) {
+          const readLen = Math.min(8192, stat.size - pos);
+          const { bytesRead } = await handle.read(buf, 0, readLen, pos);
+          for (let i = 0; i < bytesRead; i++) {
+            if (buf[i] === 0x0A) count++;
+          }
+          pos += bytesRead;
         }
-        pos += bytesRead;
+      } finally {
+        await handle.close();
       }
-      fs.closeSync(fd);
       return count;
     } catch {
       return 0;
@@ -1021,47 +1094,33 @@ class Watcher extends require('events').EventEmitter {
   // Directory walking
   // =========================================================================
 
-  _createWalkDir(readdirFn) {
-    const walk = async (dir, callback) => {
-      try {
-        const entries = await readdirFn(dir, { withFileTypes: true });
-        for (const entry of entries) {
-          const fullPath = path.join(dir, entry.name);
-          if (entry.isDirectory()) {
-            await walk(fullPath, callback);
-          } else {
-            let stats;
-            try { stats = fs.statSync(fullPath); } catch { continue; }
-            callback(fullPath, stats);
-          }
+  _walkDir = createWalkDir(fsp.readdir);
+}
+
+// ============================================================================
+// Directory walking (shared factory for sync and async)
+// ============================================================================
+
+function createWalkDir(readdirFn) {
+  const walk = async (dir, callback) => {
+    try {
+      const entries = await readdirFn(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          await walk(fullPath, callback);
+        } else {
+          let stats;
+          try { stats = await fsp.stat(fullPath); } catch { continue; }
+          callback(fullPath, stats);
         }
-      } catch {}
-    };
-    return walk;
-  }
-
-  _walkDir = this._createWalkDir(fsp.readdir);
-}
-
-// ============================================================================
-// Pure synchronous directory walk (no async/Promise overhead)
-// ============================================================================
-
-function _walkDirSyncSimple(dir, callback) {
-  try {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        _walkDirSyncSimple(fullPath, callback);
-      } else {
-        let stats;
-        try { stats = fs.statSync(fullPath); } catch { continue; }
-        callback(fullPath, stats);
       }
-    }
-  } catch {}
+    } catch {}
+  };
+  return walk;
 }
+
+var _walkDirAsync = createWalkDir(fsp.readdir);
 
 // ============================================================================
 // Static listing methods
@@ -1106,19 +1165,7 @@ async function _listSessionsFiltered(limit, activeWithin) {
 }
 
 async function _walkDirStatic(dir, callback) {
-  try {
-    const entries = await fsp.readdir(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await _walkDirStatic(fullPath, callback);
-      } else {
-        let stats;
-        try { stats = fs.statSync(fullPath); } catch { continue; }
-        callback(fullPath, stats);
-      }
-    }
-  } catch {}
+  return _walkDirAsync(dir, callback);
 }
 
 module.exports = {

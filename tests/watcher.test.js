@@ -189,7 +189,7 @@ describe('Watcher class', () => {
       assert.strictEqual(pending[0], p);
     });
 
-    it('should register subagent immediately when session exists', () => {
+    it('should register subagent immediately when session exists', async () => {
       const w = new watcherModule.Watcher({});
       const session = new watcherModule.Session('s1', '/proj', '/file.jsonl');
       w.sessions.set('s1', session);
@@ -201,7 +201,7 @@ describe('Watcher class', () => {
       const agentPath = path.join(agentDir, 'agent-a1.jsonl');
       fs.writeFileSync(agentPath, '');
 
-      w._handleNewSubagentFile(agentPath);
+      await w._registerSubagent(session, 's1', 'a1', agentPath);
 
       assert.strictEqual(w.pendingSubagents.size, 0);
       assert.strictEqual(session.subagents['a1'], agentPath);
@@ -209,7 +209,7 @@ describe('Watcher class', () => {
       try { fs.rmSync(tmpDir, { recursive: true }); } catch {}
     });
 
-    it('should process pending subagents when session is discovered', () => {
+    it('should process pending subagents when session is discovered', async () => {
       const w = new watcherModule.Watcher({});
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pending-test-'));
       const agentDir = path.join(tmpDir, 's1', 'subagents');
@@ -229,7 +229,7 @@ describe('Watcher class', () => {
         w.pendingSubagents.delete('s1');
         for (const sp of pending) {
           const agentID = path.basename(sp).replace(/^agent-/, '').replace(/\.jsonl$/, '');
-          w._registerSubagent(session, 's1', agentID, sp);
+          await w._registerSubagent(session, 's1', agentID, sp);
         }
       }
 
@@ -253,26 +253,26 @@ describe('Watcher class', () => {
       try { fs.rmSync(tmpDir, { recursive: true }); } catch {}
     });
 
-    it('should return 0 for empty file', () => {
+    it('should return 0 for empty file', async () => {
       fs.writeFileSync(tmpFile, '');
       const w = new watcherModule.Watcher({});
-      const pos = w._findPositionForLastNLines(tmpFile, 10);
+      const pos = await w._findPositionForLastNLines(tmpFile, 10);
       assert.strictEqual(pos, 0);
     });
 
-    it('should return 0 when file has fewer lines than n', () => {
+    it('should return 0 when file has fewer lines than n', async () => {
       fs.writeFileSync(tmpFile, 'line1\nline2\nline3\n');
       const w = new watcherModule.Watcher({});
-      const pos = w._findPositionForLastNLines(tmpFile, 10);
+      const pos = await w._findPositionForLastNLines(tmpFile, 10);
       assert.strictEqual(pos, 0);
     });
 
-    it('should find correct byte offset for last N lines', () => {
+    it('should find correct byte offset for last N lines', async () => {
       const lines = [];
       for (let i = 0; i < 20; i++) lines.push(`line${i}`);
       fs.writeFileSync(tmpFile, lines.join('\n') + '\n');
       const w = new watcherModule.Watcher({});
-      const pos = w._findPositionForLastNLines(tmpFile, 5);
+      const pos = await w._findPositionForLastNLines(tmpFile, 5);
       // Verify that reading from pos yields the last portion of the file
       const content = fs.readFileSync(tmpFile, 'utf-8');
       assert.ok(pos > 0);
@@ -282,10 +282,10 @@ describe('Watcher class', () => {
       assert.ok(fromPos.includes('line16'));
     });
 
-    it('should handle file with single byte per line', () => {
+    it('should handle file with single byte per line', async () => {
       fs.writeFileSync(tmpFile, 'a\nb\nc\nd\ne\nf\n');
       const w = new watcherModule.Watcher({});
-      const pos = w._findPositionForLastNLines(tmpFile, 2);
+      const pos = await w._findPositionForLastNLines(tmpFile, 2);
       // Verify pos points to somewhere in the file, after the 2nd newline from end
       assert.ok(pos > 0);
       const content = fs.readFileSync(tmpFile, 'utf-8');
@@ -293,9 +293,9 @@ describe('Watcher class', () => {
       assert.ok(fromPos.includes('f'));
     });
 
-    it('should return 0 for non-existent file', () => {
+    it('should return 0 for non-existent file', async () => {
       const w = new watcherModule.Watcher({});
-      const pos = w._findPositionForLastNLines('/nonexistent/file', 10);
+      const pos = await w._findPositionForLastNLines('/nonexistent/file', 10);
       assert.strictEqual(pos, 0);
     });
   });
@@ -353,12 +353,12 @@ describe('Watcher class', () => {
       try { fs.rmSync(tmpDir, { recursive: true }); } catch {}
     });
 
-    it('should populate toolIndex from files', () => {
+    it('should populate toolIndex from files', async () => {
       const w = new watcherModule.Watcher({});
       const session = new watcherModule.Session('s1', '/proj', mainFile);
       session.subagents['a1'] = agentFile;
 
-      w._populateToolIndex(session);
+      await w._populateToolIndex(session);
 
       assert.strictEqual(session.toolIndexPopulated, true);
       assert.strictEqual(session.toolIndex.size, 2);
@@ -373,13 +373,13 @@ describe('Watcher class', () => {
       assert.strictEqual(tool2.parentAgentID, 'a1');
     });
 
-    it('should not re-populate on second call', () => {
+    it('should not re-populate on second call', async () => {
       const session = new watcherModule.Session('s1', '/proj', mainFile);
       session.toolIndexPopulated = true;
       session.toolIndex.set('toolu_1', { toolName: 'cached', parentAgentID: '', hasResult: false });
 
       const w = new watcherModule.Watcher({});
-      w._populateToolIndex(session);
+      await w._populateToolIndex(session);
 
       // Should NOT overwrite the cached entry
       assert.strictEqual(session.toolIndex.get('toolu_1').toolName, 'cached');

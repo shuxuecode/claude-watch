@@ -3,120 +3,383 @@
 const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert');
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { WebSocket } = require('ws');
+const { DashboardServer } = require('../src/server/server');
 
-// We test server logic by importing and testing the internal functions
-// directly. Since server.js doesn't export its internals, we use
-// an HTTP integration test approach.
+// ============================================================================
+// Helpers
+// ============================================================================
 
-const { startServer } = require('../src/server/server');
+function createServer() {
+  return new DashboardServer({ port: 0, host: '127.0.0.1', debugAll: false });
+}
 
-describe('Server', () => {
-  describe('HTTP API', () => {
-    let serverHandle;
-    let port;
-
-    before(async () => {
-      // Start server on a random available port
-      port = 0; // Let OS assign port
-      // We can't easily use startServer for testing because it auto-opens browser.
-      // Instead, create a raw HTTP server that exercises the handler logic.
-      // For now, test the module loads correctly.
+function makeRequest(server, pathname, method = 'GET') {
+  return new Promise((resolve, reject) => {
+    const opts = {
+      hostname: '127.0.0.1',
+      port: server.port,
+      path: pathname,
+      method,
+    };
+    const req = http.request(opts, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf-8');
+        resolve({ statusCode: res.statusCode, headers: res.headers, body });
+      });
     });
+    req.on('error', reject);
+    req.end();
+  });
+}
 
-    it('should export startServer function', () => {
-      assert.strictEqual(typeof startServer, 'function');
+function startBareServer(ds) {
+  // Start just the HTTP + WS server without browser open, watcher init, or killExistingPort
+  ds.server = http.createServer((req, res) => {
+    ds.handleHTTP(req, res).catch(() => {
+      if (!res.headersSent) { res.writeHead(500); res.end('Internal Server Error'); }
+    });
+  });
+
+  const { WebSocketServer } = require('ws');
+  ds.wss = new WebSocketServer({ server: ds.server });
+  ds.wss.on('connection', (ws) => ds.onWsConnection(ws));
+
+  return new Promise((resolve, reject) => {
+    ds.server.listen(0, '127.0.0.1', () => {
+      ds.port = ds.server.address().port;
+      resolve();
+    });
+    ds.server.on('error', reject);
+  });
+}
+
+// ============================================================================
+// DashboardServer internals
+// ============================================================================
+
+describe('DashboardServer internals', () => {
+  it('should construct with default options', () => {
+    const ds = new DashboardServer();
+    assert.strictEqual(ds.port, 23000);
+    assert.strictEqual(ds.host, '127.0.0.1');
+    assert.strictEqual(ds.collapseAfterMs, 0);
+    assert.strictEqual(ds.itemBuffer.length, 0);
+    assert.strictEqual(ds.contextMap.size, 0);
+    assert.strictEqual(ds.watcher, null);
+  });
+
+  it('should construct with custom options', () => {
+    const ds = new DashboardServer({ port: 8080, host: '0.0.0.0', collapseAfter: 120000 });
+    assert.strictEqual(ds.port, 8080);
+    assert.strictEqual(ds.host, '0.0.0.0');
+    assert.strictEqual(ds.collapseAfterMs, 120000);
+  });
+
+  describe('getCtxKey', () => {
+    const ds = createServer();
+    it('should combine sessionID and agentID', () => {
+      assert.strictEqual(ds.getCtxKey('s1', 'a1'), 's1:a1');
+    });
+    it('should use empty string when agentID is omitted', () => {
+      assert.strictEqual(ds.getCtxKey('s1'), 's1:');
+      assert.strictEqual(ds.getCtxKey('s1', undefined), 's1:');
     });
   });
 
   describe('updateContext / getContextSnapshot', () => {
-    // These are internal functions not exported, but we test the logic
-    // pattern they implement
+    const ds = createServer();
+
     it('should aggregate token counts per agent', () => {
-      const contextMap = new Map();
+      ds.updateContext({ sessionID: 's1', agentID: '', inputTokens: 100, outputTokens: 50 });
+      ds.updateContext({ sessionID: 's1', agentID: 'a1', inputTokens: 200, outputTokens: 100 });
+      ds.updateContext({ sessionID: 's1', agentID: '', inputTokens: 50, outputTokens: 25 });
 
-      function getCtxKey(sessionID, agentID) {
-        return sessionID + ':' + (agentID || '');
-      }
-
-      function updateContext(item) {
-        const key = getCtxKey(item.sessionID, item.agentID);
-        let ctx = contextMap.get(key);
-        if (!ctx) {
-          ctx = { inputTokens: 0, outputTokens: 0, cacheCreation: 0, cacheRead: 0, model: '', contextWindow: 200000, lastActivity: Date.now() };
-          contextMap.set(key, ctx);
-        }
-        if (item.inputTokens) ctx.inputTokens += item.inputTokens;
-        if (item.outputTokens) ctx.outputTokens += item.outputTokens;
-        if (item.cacheCreationTokens) ctx.cacheCreation += item.cacheCreationTokens;
-        if (item.cacheReadTokens) ctx.cacheRead += item.cacheReadTokens;
-        ctx.lastActivity = Date.now();
-      }
-
-      updateContext({ sessionID: 's1', agentID: '', inputTokens: 100, outputTokens: 50 });
-      updateContext({ sessionID: 's1', agentID: 'a1', inputTokens: 200, outputTokens: 100 });
-      updateContext({ sessionID: 's1', agentID: '', inputTokens: 50, outputTokens: 25 });
-
-      assert.strictEqual(contextMap.size, 2);
-      assert.strictEqual(contextMap.get('s1:').inputTokens, 150);
-      assert.strictEqual(contextMap.get('s1:').outputTokens, 75);
-      assert.strictEqual(contextMap.get('s1:a1').inputTokens, 200);
+      const snap = ds.getContextSnapshot();
+      assert.strictEqual(Object.keys(snap).length, 2);
+      assert.strictEqual(snap['s1:'].inputTokens, 150);
+      assert.strictEqual(snap['s1:'].outputTokens, 75);
+      assert.strictEqual(snap['s1:a1'].inputTokens, 200);
     });
 
-    it('should clean up entries for removed session', () => {
-      const contextMap = new Map();
+    it('should update model and contextWindow', () => {
+      ds.updateContext({ sessionID: 's2', agentID: '', model: 'claude-opus-4-7', inputTokens: 10 });
+      const snap = ds.getContextSnapshot();
+      assert.strictEqual(snap['s2:'].model, 'claude-opus-4-7');
+      assert.strictEqual(snap['s2:'].contextWindow, 1000000);
+    });
 
-      function getCtxKey(sessionID, agentID) {
-        return sessionID + ':' + (agentID || '');
+    it('should aggregate cache tokens', () => {
+      ds.updateContext({ sessionID: 's3', agentID: '', cacheCreationTokens: 500, cacheReadTokens: 300 });
+      ds.updateContext({ sessionID: 's3', agentID: '', cacheCreationTokens: 200, cacheReadTokens: 100 });
+      const snap = ds.getContextSnapshot();
+      assert.strictEqual(snap['s3:'].cacheCreation, 700);
+      assert.strictEqual(snap['s3:'].cacheRead, 400);
+    });
+
+    it('should clean up context entries for removed session', () => {
+      ds.updateContext({ sessionID: 'rm', agentID: '', inputTokens: 1 });
+      ds.updateContext({ sessionID: 'rm', agentID: 'x', inputTokens: 2 });
+      assert.ok(ds.getContextSnapshot()['rm:']);
+      assert.ok(ds.getContextSnapshot()['rm:x']);
+
+      // Simulate the sessionRemoved handler logic
+      for (const key of ds.contextMap.keys()) {
+        if (key.startsWith('rm:')) ds.contextMap.delete(key);
       }
 
-      contextMap.set('s1:', { inputTokens: 100 });
-      contextMap.set('s1:a1', { inputTokens: 200 });
-      contextMap.set('s2:', { inputTokens: 300 });
-
-      function cleanupContextMap(sessionID) {
-        for (const key of contextMap.keys()) {
-          if (key.startsWith(sessionID + ':')) contextMap.delete(key);
-        }
-      }
-
-      cleanupContextMap('s1');
-
-      assert.strictEqual(contextMap.size, 1);
-      assert.ok(!contextMap.has('s1:'));
-      assert.ok(!contextMap.has('s1:a1'));
-      assert.ok(contextMap.has('s2:'));
+      assert.ok(!ds.getContextSnapshot()['rm:']);
+      assert.ok(!ds.getContextSnapshot()['rm:x']);
     });
   });
 
-  describe('broadcast message format', () => {
-    it('should serialize type and payload as JSON', () => {
-      const msg = JSON.stringify({ type: 'newSession', payload: { sessionID: 's1' } });
-      const parsed = JSON.parse(msg);
-      assert.strictEqual(parsed.type, 'newSession');
-      assert.strictEqual(parsed.payload.sessionID, 's1');
-    });
-
-    it('should serialize item events correctly', () => {
-      const item = { type: 'thinking', content: 'test', sessionID: 's1' };
-      const msg = JSON.stringify({ type: 'item', payload: item });
-      const parsed = JSON.parse(msg);
-      assert.strictEqual(parsed.type, 'item');
-      assert.strictEqual(parsed.payload.type, 'thinking');
-    });
-  });
-
-  describe('itemBuffer management', () => {
-    const MAX_ITEM_BUFFER = 2000;
-
-    it('should cap buffer at MAX_ITEM_BUFFER', () => {
-      const buffer = [];
+  describe('itemBuffer', () => {
+    it('should push items and cap at MAX_ITEM_BUFFER', () => {
+      const ds = createServer();
       for (let i = 0; i < 2500; i++) {
-        buffer.push({ type: 'item', index: i });
-        if (buffer.length > MAX_ITEM_BUFFER) {
-          buffer.splice(0, buffer.length - MAX_ITEM_BUFFER);
+        ds.itemBuffer.push({ type: 'item', index: i });
+        if (ds.itemBuffer.length > 2000) {
+          ds.itemBuffer.splice(0, ds.itemBuffer.length - 2000);
         }
       }
-      assert.strictEqual(buffer.length, MAX_ITEM_BUFFER);
+      assert.strictEqual(ds.itemBuffer.length, 2000);
     });
+  });
+});
+
+// ============================================================================
+// HTTP integration tests
+// ============================================================================
+
+describe('HTTP API integration', () => {
+  let ds;
+
+  before(async () => {
+    ds = createServer();
+    await startBareServer(ds);
+  });
+
+  after(() => {
+    ds.stop();
+  });
+
+  describe('static files', () => {
+    it('should serve index.html for /', async () => {
+      const res = await makeRequest(ds, '/');
+      assert.strictEqual(res.statusCode, 200);
+      assert.ok(res.headers['content-type'].includes('text/html'));
+      assert.ok(res.body.includes('claude-watch'));
+    });
+
+    it('should serve index.html for /index.html', async () => {
+      const res = await makeRequest(ds, '/index.html');
+      assert.strictEqual(res.statusCode, 200);
+      assert.ok(res.headers['content-type'].includes('text/html'));
+    });
+
+    it('should serve vendor JS files', async () => {
+      const res = await makeRequest(ds, '/vendor/highlight.min.js');
+      assert.strictEqual(res.statusCode, 200);
+      assert.ok(res.headers['content-type'].includes('javascript'));
+      assert.ok(res.body.length > 0);
+    });
+
+    it('should serve vendor CSS files', async () => {
+      const res = await makeRequest(ds, '/vendor/github-dark.min.css');
+      assert.strictEqual(res.statusCode, 200);
+      assert.ok(res.headers['content-type'].includes('text/css'));
+    });
+
+    it('should return 404 for non-existent files', async () => {
+      const res = await makeRequest(ds, '/nonexistent.css');
+      assert.strictEqual(res.statusCode, 404);
+    });
+
+    it('should block path traversal via .. (returns 403 or 404)', async () => {
+      // Node's URL + path.resolve normalizes .. away, so resolved path falls outside public/
+      // and either gets blocked by the traversal check (403) or serveStatic (404)
+      const res = await makeRequest(ds, '/../../../etc/passwd');
+      assert.ok(res.statusCode === 403 || res.statusCode === 404);
+    });
+  });
+
+  describe('API endpoints', () => {
+    it('/api/status should return session list and context', async () => {
+      ds.updateContext({ sessionID: 'test-s1', agentID: '', inputTokens: 100, outputTokens: 50 });
+      const res = await makeRequest(ds, '/api/status');
+      assert.strictEqual(res.statusCode, 200);
+      const data = JSON.parse(res.body);
+      assert.ok(Array.isArray(data.sessions));
+      assert.ok('autoDiscovery' in data);
+      assert.ok('context' in data);
+      assert.strictEqual(data.context['test-s1:'].inputTokens, 100);
+    });
+
+    it('/api/context should return context snapshot', async () => {
+      const res = await makeRequest(ds, '/api/context');
+      assert.strictEqual(res.statusCode, 200);
+      const data = JSON.parse(res.body);
+      assert.ok('test-s1:' in data);
+      assert.strictEqual(data['test-s1:'].inputTokens, 100);
+    });
+
+    it('/api/task-output without path param should return 400', async () => {
+      const res = await makeRequest(ds, '/api/task-output');
+      assert.strictEqual(res.statusCode, 400);
+      const data = JSON.parse(res.body);
+      assert.strictEqual(data.error, 'Missing path param');
+    });
+
+    it('/api/task-output with path outside allowed dir should return 403', async () => {
+      const res = await makeRequest(ds, '/api/task-output?path=/etc/passwd');
+      assert.strictEqual(res.statusCode, 403);
+      const data = JSON.parse(res.body);
+      assert.strictEqual(data.error, 'Access denied');
+    });
+
+    it('/api/task-output with non-existent file should return 404', async () => {
+      const fakePath = path.resolve(os.homedir(), '.claude', 'projects', 'nonexistent', 'file.txt');
+      const res = await makeRequest(ds, `/api/task-output?path=${encodeURIComponent(fakePath)}`);
+      assert.strictEqual(res.statusCode, 404);
+      const data = JSON.parse(res.body);
+      assert.ok(data.error);
+    });
+
+    it('/api/sessions should return array', async () => {
+      const res = await makeRequest(ds, '/api/sessions');
+      assert.strictEqual(res.statusCode, 200);
+      const data = JSON.parse(res.body);
+      assert.ok(Array.isArray(data));
+    });
+
+    it('/api/sessions/active should return array', async () => {
+      const res = await makeRequest(ds, '/api/sessions/active');
+      assert.strictEqual(res.statusCode, 200);
+      const data = JSON.parse(res.body);
+      assert.ok(Array.isArray(data));
+    });
+
+    it('unknown API route should return 404', async () => {
+      const res = await makeRequest(ds, '/api/unknown');
+      assert.strictEqual(res.statusCode, 404);
+      const data = JSON.parse(res.body);
+      assert.strictEqual(data.error, 'Not Found');
+    });
+  });
+});
+
+// ============================================================================
+// WebSocket integration tests
+// ============================================================================
+
+describe('WebSocket integration', () => {
+  let ds;
+
+  before(async () => {
+    ds = createServer();
+    ds.updateContext({ sessionID: 'ws-s1', agentID: '', inputTokens: 42 });
+    ds.itemBuffer.push({ type: 'text', sessionID: 'ws-s1', agentID: '', content: 'hello' });
+    ds.collapseAfterMs = 300000;
+    await startBareServer(ds);
+  });
+
+  after(() => {
+    ds.stop();
+  });
+
+  it('should send context, itemBatch, and config on connection', async () => {
+    const ws = new WebSocket(`ws://127.0.0.1:${ds.port}`);
+    const messages = [];
+
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { ws.close(); reject(new Error('timeout')); }, 3000);
+      ws.on('message', (data) => {
+        const msg = JSON.parse(data.toString('utf-8'));
+        messages.push(msg);
+        if (messages.length >= 3) { clearTimeout(timer); ws.close(); resolve(); }
+      });
+      ws.on('error', () => { clearTimeout(timer); ws.close(); resolve(); });
+      ws.on('close', () => { clearTimeout(timer); resolve(); });
+    });
+
+    const ctxMsg = messages.find(m => m.type === 'context');
+    assert.ok(ctxMsg);
+    assert.ok('ws-s1:' in ctxMsg.payload);
+    assert.strictEqual(ctxMsg.payload['ws-s1:'].inputTokens, 42);
+
+    const batchMsg = messages.find(m => m.type === 'itemBatch');
+    assert.ok(batchMsg);
+    assert.strictEqual(batchMsg.payload.length, 1);
+    assert.strictEqual(batchMsg.payload[0].content, 'hello');
+
+    const cfgMsg = messages.find(m => m.type === 'config');
+    assert.ok(cfgMsg);
+    assert.strictEqual(cfgMsg.payload.collapseAfter, 300000);
+  });
+
+  it('should broadcast items to all connected clients', async () => {
+    const ws1 = new WebSocket(`ws://127.0.0.1:${ds.port}`);
+    const ws2 = new WebSocket(`ws://127.0.0.1:${ds.port}`);
+
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(reject, 3000);
+      let connected = 0;
+      const onOpen = () => { connected++; if (connected === 2) { clearTimeout(timer); resolve(); } };
+      ws1.on('open', onOpen);
+      ws2.on('open', onOpen);
+      ws1.on('error', () => {});
+      ws2.on('error', () => {});
+    });
+
+    // Drain initial messages from both clients
+    await new Promise(r => setTimeout(r, 50));
+
+    const item = { type: 'thinking', sessionID: 'ws-s1', agentID: '', content: 'test broadcast' };
+    ds.broadcast('item', item);
+
+    const msgs1 = [];
+    const msgs2 = [];
+
+    await new Promise((resolve) => {
+      ws1.on('message', (d) => { msgs1.push(JSON.parse(d.toString())); });
+      ws2.on('message', (d) => { msgs2.push(JSON.parse(d.toString())); });
+      setTimeout(() => { ws1.close(); ws2.close(); resolve(); }, 200);
+    });
+
+    const itemMsg1 = msgs1.find(m => m.type === 'item');
+    const itemMsg2 = msgs2.find(m => m.type === 'item');
+    assert.ok(itemMsg1);
+    assert.ok(itemMsg2);
+    assert.strictEqual(itemMsg1.payload.content, 'test broadcast');
+    assert.strictEqual(itemMsg2.payload.content, 'test broadcast');
+  });
+
+  it('should track connected clients', async () => {
+    const freshDs = createServer();
+    freshDs.collapseAfterMs = 10000;
+    await startBareServer(freshDs);
+
+    assert.strictEqual(freshDs.clients.size, 0);
+    const ws = new WebSocket(`ws://127.0.0.1:${freshDs.port}`);
+
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { ws.close(); reject(new Error('timeout')); }, 3000);
+      ws.on('open', () => { clearTimeout(timer); resolve(); });
+      ws.on('error', () => { clearTimeout(timer); ws.close(); resolve(); });
+    });
+
+    assert.strictEqual(freshDs.clients.size, 1);
+
+    ws.close();
+    // Wait for server-side close handler to remove from clients
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    assert.strictEqual(freshDs.clients.size, 0);
+    freshDs.stop();
   });
 });
