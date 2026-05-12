@@ -30,6 +30,28 @@
   --orange: #fb923c;
 }
 
+:root[data-theme="light"] {
+  --bg: #f8f9fa;
+  --bg2: #e9ecef;
+  --bg3: #ced4da;
+  --border: #adb5bd;
+  --text: #495057;
+  --dim: #868e96;
+  --white: #212529;
+  --purple: #6741d9;
+  --purple2: #5b21b6;
+  --blue: #2563eb;
+  --magenta: #9333ea;
+  --yellow: #d97706;
+  --yellow2: #92400e;
+  --green: #059669;
+  --cyan: #0891b2;
+  --red: #dc2626;
+  --red2: #b91c1c;
+  --gray: #6b7280;
+  --orange: #ea580c;
+}
+
 body {
   background: var(--bg);
   color: var(--text);
@@ -218,6 +240,21 @@ body {
 
 /* Override highlight.js background to match our theme */
 .hljs { background: #0d1117 !important; }
+
+/* Light theme overrides */
+:root[data-theme="light"] .btn.on { background: var(--purple); border-color: var(--purple); color: #fff; }
+:root[data-theme="light"] .btn.on:hover { background: var(--purple2); color: #fff; }
+:root[data-theme="light"] .btn.on:hover::after { background: var(--purple2); color: #fff; }
+:root[data-theme="light"] .hljs { background: #f0f0f0 !important; }
+:root[data-theme="light"] .tree-node:hover { background: rgba(0,0,0,0.06); }
+:root[data-theme="light"] .tree-node.selected { background: rgba(124,58,237,0.2); }
+:root[data-theme="light"] .tree-node .active-dot.off { color: #bbb; }
+:root[data-theme="light"] #tree-resize-handle:hover,
+:root[data-theme="light"] #tree-resize-handle.active { background: var(--purple); }
+:root[data-theme="light"] .stream-line.text { color: var(--text); }
+
+/* Theme toggle button */
+#btn-theme { font-size: 14px; }
 </style>
 </head>
 <body>
@@ -233,6 +270,7 @@ body {
   <span class="sep">│</span>
   <span id="session-info">Connecting...</span>
   <div class="auto">
+    <button class="btn btn-icon" id="btn-theme" onclick="toggleTheme()" data-tooltip="Toggle theme">🌙</button>
     <button class="btn on" id="btn-autodisco" onclick="toggleAutoDiscovery()" data-tooltip="Auto-discover">🔍 Auto</button>
     <span class="sep">│</span>
     <span id="token-info"></span>
@@ -1236,6 +1274,37 @@ function scheduleRender() {
     });
   }
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Theme toggle
+// ══════════════════════════════════════════════════════════════════════════════
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  const btn = document.getElementById('btn-theme');
+  if (btn) {
+    btn.textContent = theme === 'dark' ? '🌙' : '☀️';
+    btn.setAttribute('data-tooltip', theme === 'dark' ? 'Switch to light' : 'Switch to dark');
+  }
+  // Swap highlight.js stylesheet for theme
+  const hlLink = document.querySelector('link[rel="stylesheet"][href*="github"]');
+  if (hlLink) {
+    hlLink.href = theme === 'dark' ? 'vendor/github-dark.min.css' : 'vendor/github-light.min.css';
+  }
+}
+
+function toggleTheme() {
+  const current = document.documentElement.getAttribute('data-theme') || 'dark';
+  const next = current === 'dark' ? 'light' : 'dark';
+  localStorage.setItem('theme', next);
+  applyTheme(next);
+}
+
+// Apply saved theme on load (default dark)
+(function() {
+  const saved = localStorage.getItem('theme');
+  applyTheme(saved || 'dark');
+})();
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Init
