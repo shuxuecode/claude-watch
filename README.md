@@ -12,7 +12,7 @@ Claude Code writes detailed JSONL logs under `~/.claude/projects/` as it works �
 - **Multi-session** — watch all active Claude Code sessions simultaneously in a tree view
 - **Subagent tracking** — see subagent activity nested under their parent session
 - **Token & cost visibility** — tracks input/output/cache tokens per agent, with context window utilization
-- **Filter controls** — toggle thinking, tool input, tool output, and text visibility independently
+- **Filter controls** — toggle thinking, tool input, tool output, hook output, and text visibility independently
 - **Auto-discovery** — automatically picks up new sessions as they start (toggleable)
 
 ## Quick Start
@@ -51,7 +51,7 @@ OPTIONS:
     -n                   Start from newest (skip history, live only)
     -l [N]               List recent sessions (default 10) and exit
     -a [N]               List active sessions (default all) and exit
-    -w <dur>             Active window duration (default 5m, e.g. 30s, 2m, 10m)
+    -w <dur>             Active window duration (default 30m, e.g. 30s, 2m, 10m)
     -m <N>               Max sessions to show in tree (default 0=unlimited)
     -c <dur>             Auto-collapse sessions inactive for this duration (e.g. 2m)
     -D                   Debug: show raw type:subtype for every JSONL line we'd drop

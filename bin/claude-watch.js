@@ -150,7 +150,7 @@ async function main() {
     sessionID: '',
     skipHistory: false,
     pollMs: 500,
-    activeWindow: 5 * 60 * 1000,
+    activeWindow: 30 * 60 * 1000,
     maxSessions: 0,
     collapseAfter: 0,
     debugAll: false,
@@ -190,7 +190,7 @@ async function main() {
         break;
       case '-w':
         try {
-          options.activeWindow = parseDuration(args[++i] || '5m');
+          options.activeWindow = parseDuration(args[++i] || '30m');
         } catch {
           options.activeWindow = 5 * 60 * 1000;
         }

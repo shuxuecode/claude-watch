@@ -9,3 +9,6 @@
 - src/watcher/watcher.js
 - CHANGELOG.md
 - public/index.html
+- README.md
+- README.zh-CN.md
+- bin/claude-watch.js
