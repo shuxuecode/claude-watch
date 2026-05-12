@@ -264,6 +264,7 @@ body {
   <button class="btn on" id="btn-tool-input" onclick="toggleToolInput()" data-tooltip="Toggle tool input">🔧 Tools</button>
   <button class="btn on" id="btn-tool-output" onclick="toggleToolOutput()" data-tooltip="Toggle tool output">📤 Output</button>
   <button class="btn on" id="btn-text" onclick="toggleText()" data-tooltip="Toggle text responses">💬 Text</button>
+  <button class="btn on" id="btn-hook" onclick="toggleHook()" data-tooltip="Toggle hook output">🪝 Hook</button>
   <span class="sep">│</span>
   <button class="btn on" id="btn-autoscroll" onclick="toggleAutoScroll()" data-tooltip="Auto-scroll">⇣ Auto</button>
   <button class="btn" id="btn-tree-toggle" onclick="toggleTree()" data-tooltip="Toggle tree panel">📂 Tree</button>
@@ -380,6 +381,7 @@ let showThinking = true;
 let showToolInput = true;
 let showToolOutput = true;
 let showText = true;
+let showHook = true;
 let autoDiscovery = true;
 
 let renderPending = false;
@@ -401,7 +403,7 @@ let collapseAfter = 0;
 let collapseTimer = null;
 let activeRefreshTimer = null;
 
-const MAX_ITEMS = 1000;
+const MAX_ITEMS = 3000;
 const MAX_LINES = 50;
 let renderedItemCount = 0;
 let needsFullRender = true;
@@ -596,7 +598,10 @@ function handleNewBgTask(payload) {
 
 function handleSessionRemoved(payload) {
   const idx = sessions.findIndex(s => s.id === payload.sessionID);
-  if (idx >= 0) sessions.splice(idx, 1);
+  if (idx >= 0) {
+    const session = sessions.splice(idx, 1)[0];
+    sessions.push(session);
+  }
   updateFilters();
   rebuildNodes();
   scheduleRender();
@@ -665,6 +670,7 @@ function isItemVisible(item) {
     case 'tool_input': return showToolInput;
     case 'tool_output': return showToolOutput;
     case 'text': return showText;
+    case 'hook_output': return showHook;
     default: return true;
   }
 }
@@ -951,6 +957,7 @@ function refreshButtons() {
   document.getElementById('btn-tool-input').classList.toggle('on', showToolInput);
   document.getElementById('btn-tool-output').classList.toggle('on', showToolOutput);
   document.getElementById('btn-text').classList.toggle('on', showText);
+  document.getElementById('btn-hook').classList.toggle('on', showHook);
   document.getElementById('btn-autoscroll').classList.toggle('on', autoScroll);
   document.getElementById('btn-tree-toggle').classList.toggle('on', showTree);
   document.getElementById('btn-autodisco').classList.toggle('on', autoDiscovery);
@@ -1104,8 +1111,12 @@ function removeSelectedSession() {
   if (node.type === 'session') sid = node.id;
   else sid = node.sessionID;
   if (!sid) return;
-  if (!confirm(`Remove session ${sid.slice(0, 12)}...?`)) return;
-  sessions = sessions.filter(s => s.id !== sid);
+  if (!confirm(`Move session ${sid.slice(0, 12)}... to bottom?`)) return;
+  const idx = sessions.findIndex(s => s.id === sid);
+  if (idx >= 0) {
+    const session = sessions.splice(idx, 1)[0];
+    sessions.push(session);
+  }
   sendCmd('removeSession', { sessionID: sid });
   updateFilters();
   rebuildNodes();
@@ -1120,6 +1131,7 @@ function toggleThinking() { showThinking = !showThinking; needsFullRender = true
 function toggleToolInput() { showToolInput = !showToolInput; needsFullRender = true; renderStream(); refreshButtons(); }
 function toggleToolOutput() { showToolOutput = !showToolOutput; needsFullRender = true; renderStream(); refreshButtons(); }
 function toggleText() { showText = !showText; needsFullRender = true; renderStream(); refreshButtons(); }
+function toggleHook() { showHook = !showHook; needsFullRender = true; renderStream(); refreshButtons(); }
 function toggleAutoScroll() { autoScroll = !autoScroll; if (autoScroll) streamEl.scrollTop = streamEl.scrollHeight; renderAll(); }
 function toggleTree() { showTree = !showTree; document.getElementById('tree-panel').classList.toggle('hidden', !showTree); }
 function toggleAutoDiscovery() { sendCmd('toggleAutoDiscovery'); }

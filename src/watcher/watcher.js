@@ -111,7 +111,7 @@ class Watcher extends EventEmitter {
     super();
     this.claudeDir = getClaudeProjectsDir();
     this.pollInterval = pollInterval || 500;
-    this.activeWindow = activeWindow || 5 * 60 * 1000;
+    this.activeWindow = activeWindow || 100 * 60 * 1000;
     this.maxSessions = maxSessions || 0;
     this.sessions = new Map();
     this.filePositions = new Map();

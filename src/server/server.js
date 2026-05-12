@@ -21,7 +21,7 @@ var MIME = {
 };
 
 var MAX_ITEM_BUFFER = 2000;
-var CONTEXT_STALE_MS = 30 * 60 * 1000; // 30 minutes
+var CONTEXT_STALE_MS = 60 * 60 * 1000; // 60 minutes
 
 class DashboardServer {
   constructor(options = {}) {
@@ -52,7 +52,7 @@ class DashboardServer {
       ctx = { inputTokens: 0, outputTokens: 0, cacheCreation: 0, cacheRead: 0, model: '', contextWindow: 200000, lastActivity: Date.now() };
       this.contextMap.set(key, ctx);
     }
-    if (item.inputTokens) ctx.inputTokens += item.inputTokens;
+    if (item.inputTokens) ctx.inputTokens = Math.max(ctx.inputTokens, item.inputTokens);
     if (item.outputTokens) ctx.outputTokens += item.outputTokens;
     if (item.cacheCreationTokens) ctx.cacheCreation += item.cacheCreationTokens;
     if (item.cacheReadTokens) ctx.cacheRead += item.cacheReadTokens;
@@ -353,7 +353,7 @@ class DashboardServer {
     }
     const skipHistory = options.skipHistory || false;
     const pollMs = options.pollMs || 500;
-    const activeWindow = options.activeWindow || 5 * 60 * 1000;
+    const activeWindow = options.activeWindow || 100 * 60 * 1000;
     const maxSessions = options.maxSessions || 0;
     const openBrowser = options.openBrowser !== false;
 
@@ -400,19 +400,6 @@ class DashboardServer {
       await w.init();
       if (skipHistory) w.setSkipHistory(true);
       await w.start();
-
-      // Open browser AFTER sessions are discovered, so new clients get a full snapshot
-      if (openBrowser) {
-        const url = `http://localhost:${this.port}`;
-        const platform = process.platform;
-        if (platform === 'darwin') {
-          cp.spawn('open', [url]);
-        } else if (platform === 'win32') {
-          cp.spawn('cmd', ['/c', 'start', '', url]);
-        } else {
-          cp.spawn('xdg-open', [url]);
-        }
-      }
     } catch (err) {
       console.error('Watcher init error:', err.message);
       process.exit(1);
@@ -420,14 +407,31 @@ class DashboardServer {
 
     this._contextCleanupTimer = setInterval(() => this.cleanupContextMap(), CONTEXT_STALE_MS);
 
-    this.server.listen(this.port, this.host, () => {
-      const url = `http://localhost:${this.port}`;
-      console.log(`\n  claude-watch web server`);
-      console.log(`  ───────────────────────────`);
-      console.log(`  Local:   ${url}`);
-      console.log(`  Network: http://${this.host}:${this.port}`);
-      console.log(`  Quit:    Ctrl+C\n`);
+    // Start listening and wait for server to be ready before opening browser
+    await new Promise((resolve) => {
+      this.server.listen(this.port, this.host, () => {
+        const url = `http://localhost:${this.port}`;
+        console.log(`\n  claude-watch web server`);
+        console.log(`  ───────────────────────────`);
+        console.log(`  Local:   ${url}`);
+        console.log(`  Network: http://${this.host}:${this.port}`);
+        console.log(`  Quit:    Ctrl+C\n`);
+        resolve();
+      });
     });
+
+    // Open browser AFTER server is confirmed listening and watcher is ready
+    if (openBrowser) {
+      const url = `http://localhost:${this.port}`;
+      const platform = process.platform;
+      if (platform === 'darwin') {
+        cp.spawn('open', [url]);
+      } else if (platform === 'win32') {
+        cp.spawn('cmd', ['/c', 'start', '', url]);
+      } else {
+        cp.spawn('xdg-open', [url]);
+      }
+    }
 
     return { server: this.server, watcher: w };
   }
