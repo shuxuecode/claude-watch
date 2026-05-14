@@ -145,6 +145,7 @@ function parseSessionTitle(raw, timestamp, title) {
     type: StreamItemType.SESSION_TITLE,
     sessionID: raw.sessionId,
     content: title,
+    timestamp,
   })];
 }
 
@@ -162,6 +163,7 @@ function parseSystemMessage(raw, timestamp) {
         agentID: raw.agentId || '',
         agentName: name,
         durationMs: raw.durationMs || 0,
+        timestamp,
       })];
     case 'compact_boundary':
       return [makeItem({
@@ -170,6 +172,7 @@ function parseSystemMessage(raw, timestamp) {
         agentID: raw.agentId || '',
         agentName: name,
         content: formatCompactSummary(raw.compactMetadata),
+        timestamp,
       })];
     default:
       return [];
@@ -216,6 +219,7 @@ function parseAttachment(raw, timestamp) {
         toolName: raw.attachment.hookName || '',
         content: body,
         durationMs: raw.attachment.durationMs || 0,
+        timestamp,
       })];
     }
     case 'diagnostics':
@@ -237,6 +241,7 @@ function diagnosticsItems(raw, timestamp, agentName) {
       agentName,
       toolName: diagnosticsHeader(f),
       content: diagnosticsBody(f.diagnostics),
+      timestamp,
     }));
   }
   return items;
@@ -289,6 +294,7 @@ function parsePRLink(raw, timestamp) {
     type: StreamItemType.PR_LINK,
     sessionID: raw.sessionId,
     content,
+    timestamp,
   })];
 }
 
@@ -312,6 +318,7 @@ function parseAssistantMessage(raw, timestamp) {
             agentID: raw.agentId || '',
             agentName: name,
             content: block.thinking,
+            timestamp,
           }));
         }
         break;
@@ -322,6 +329,7 @@ function parseAssistantMessage(raw, timestamp) {
             agentID: raw.agentId || '',
             agentName: name,
             content: block.text,
+            timestamp,
           }));
         }
         break;
@@ -333,6 +341,7 @@ function parseAssistantMessage(raw, timestamp) {
           content: formatToolInput(block.name, block.input),
           toolName: prettyToolName(block.name),
           toolID: block.id || '',
+          timestamp,
         }));
         break;
     }
@@ -378,6 +387,7 @@ function parseUserMessage(raw, timestamp) {
         content: extractToolResultContent(result.content),
         toolID: result.tool_use_id || '',
         durationMs,
+        timestamp,
       }));
     }
   }
@@ -406,14 +416,21 @@ function extractToolResultContent(content) {
 // Tool Input Formatting
 // ============================================================================
 
+var MAX_TOOL_INPUT_LENGTH = 5000;
+
+function truncate(s) {
+  if (!s || s.length <= MAX_TOOL_INPUT_LENGTH) return s;
+  return s.slice(0, MAX_TOOL_INPUT_LENGTH) + '...truncated';
+}
+
 function formatToolInput(toolName, input) {
   if (!input) return '';
   const inp = input;
 
   switch (toolName) {
     case 'Bash':
-      if (inp.description) return `${inp.command}\n  # ${inp.description}`;
-      return inp.command || '';
+      if (inp.description) return truncate(`${inp.command}\n  # ${inp.description}`);
+      return truncate(inp.command || '');
     case 'Read':
       return inp.file_path || '';
     case 'Write':
@@ -432,22 +449,22 @@ function formatToolInput(toolName, input) {
       return inp.query || '';
     case 'Task':
     case 'Agent':
-      if (inp.description) return inp.description;
-      return inp.prompt || '';
+      if (inp.description) return truncate(inp.description);
+      return truncate(inp.prompt || '');
     case 'Skill':
-      if (inp.args) return `${inp.skill} \u2014 ${inp.args}`;
+      if (inp.args) return truncate(`${inp.skill} \u2014 ${inp.args}`);
       return inp.skill || '';
     case 'ToolSearch':
       return inp.query || '';
     case 'ScheduleWakeup':
       if (inp.reason) return inp.reason;
       if (inp.delaySeconds > 0) return `delay ${inp.delaySeconds}s`;
-      return JSON.stringify(input);
+      return truncate(JSON.stringify(input));
     case 'TaskCreate':
       return inp.subject || '';
     case 'TaskUpdate':
       if (inp.taskId) return `task ${inp.taskId}`;
-      return JSON.stringify(input);
+      return truncate(JSON.stringify(input));
     case 'TaskStop':
       return inp.task_id || '';
     case 'EnterPlanMode':
@@ -456,9 +473,9 @@ function formatToolInput(toolName, input) {
       return '(exit plan mode)';
     case 'CronCreate':
       if (inp.cron && inp.prompt) return `${inp.cron}: ${inp.prompt}`;
-      return JSON.stringify(input);
+      return truncate(JSON.stringify(input));
     default:
-      return JSON.stringify(input);
+      return truncate(JSON.stringify(input));
   }
 }
 

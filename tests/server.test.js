@@ -102,7 +102,7 @@ describe('DashboardServer internals', () => {
 
       const snap = ds.getContextSnapshot();
       assert.strictEqual(Object.keys(snap).length, 2);
-      assert.strictEqual(snap['s1:'].inputTokens, 150);
+      assert.strictEqual(snap['s1:'].inputTokens, 100);
       assert.strictEqual(snap['s1:'].outputTokens, 75);
       assert.strictEqual(snap['s1:a1'].inputTokens, 200);
     });
@@ -242,12 +242,12 @@ describe('HTTP API integration', () => {
       assert.strictEqual(data.error, 'Access denied');
     });
 
-    it('/api/task-output with non-existent file should return 404', async () => {
+    it('/api/task-output with non-existent file should return 403 (path unresolvable)', async () => {
       const fakePath = path.resolve(os.homedir(), '.claude', 'projects', 'nonexistent', 'file.txt');
       const res = await makeRequest(ds, `/api/task-output?path=${encodeURIComponent(fakePath)}`);
-      assert.strictEqual(res.statusCode, 404);
+      assert.strictEqual(res.statusCode, 403);
       const data = JSON.parse(res.body);
-      assert.ok(data.error);
+      assert.strictEqual(data.error, 'Access denied');
     });
 
     it('/api/sessions should return array', async () => {

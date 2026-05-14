@@ -17,6 +17,7 @@ var AutoSkipLineThreshold = 100;
 var KeepRecentLines = 10;
 var CleanupInterval = 5 * 60 * 1000;
 var FsnotifyDiscoveryInterval = 60 * 1000;
+var MaxReadChunk = 64 * 1024;
 var RecentActivityThreshold = 2 * 60 * 1000;
 var DebounceInterval = 50;
 
@@ -31,7 +32,7 @@ function getClaudeProjectsDir() {
   return path.join(os.homedir(), '.claude', 'projects');
 }
 
-function resolveProjectPath(encoded) {
+async function resolveProjectPath(encoded) {
   let s = encoded;
   if (s.startsWith('-')) s = s.slice(1);
   if (!s) return '';
@@ -44,7 +45,7 @@ function resolveProjectPath(encoded) {
     const dirPart = parts.slice(joinFrom).join('-');
     const testPath = `/${pathPart}/${dirPart}`;
     try {
-      fs.accessSync(testPath);
+      await fsp.access(testPath);
       return `${pathPart}/${dirPart}`;
     } catch {
       // Path doesn't exist, try next combination
@@ -89,6 +90,7 @@ class Session {
     this.backgroundTasks = {}; // toolID -> BackgroundTask
     this.toolIndex = new Map(); // toolID -> { toolName, parentAgentID, hasResult }
     this.toolIndexPopulated = false;
+    this._toolIndexPromise = null;
   }
 }
 
@@ -187,22 +189,19 @@ class Watcher extends EventEmitter {
     if (jsonlFiles.length === 0) return null;
 
     // Sort by mtime (most recent first)
-    jsonlFiles.sort((a, b) => {
-      try {
-        const sa = fs.statSync(a);
-        const sb = fs.statSync(b);
-        return sb.mtimeMs - sa.mtimeMs;
-      } catch {
-        return 0;
-      }
-    });
+    const statResults = await Promise.all(jsonlFiles.map(async f => {
+      try { return { path: f, mtime: (await fsp.stat(f)).mtimeMs }; } catch { return null; }
+    }));
+    const validStats = statResults.filter(s => s !== null);
+    validStats.sort((a, b) => b.mtime - a.mtime);
 
     let mainFile;
     if (sessionID) {
-      mainFile = jsonlFiles.find(f => f.includes(sessionID));
+      mainFile = validStats.find(s => s.path.includes(sessionID));
       if (!mainFile) return null;
+      mainFile = mainFile.path;
     } else {
-      mainFile = jsonlFiles[0];
+      mainFile = validStats.length > 0 ? validStats[0].path : jsonlFiles[0];
     }
 
     return this.buildSession(mainFile);
@@ -212,7 +211,7 @@ class Watcher extends EventEmitter {
     const base = path.basename(mainFile);
     const id = base.replace(/\.jsonl$/, '');
     const projectDir = path.basename(path.dirname(mainFile));
-    const projectPath = resolveProjectPath(projectDir);
+    const projectPath = await resolveProjectPath(projectDir);
 
     const session = new Session(id, projectPath, mainFile);
 
@@ -322,11 +321,7 @@ class Watcher extends EventEmitter {
   async _startFsnotify() {
     // Set up watches
     try {
-      if (fs.existsSync(this.claudeDir)) {
-        this._addDirectoryWatches(this.claudeDir);
-      } else {
-        this._watchAncestor(this.claudeDir);
-      }
+      try { await fsp.stat(this.claudeDir); await this._addDirectoryWatches(this.claudeDir); } catch { await this._watchAncestor(this.claudeDir); }
     } catch (err) {
       if (this.debug) console.error('[watcher] start watch setup error:', err.message);
     }
@@ -338,7 +333,7 @@ class Watcher extends EventEmitter {
     }
 
     // chokidar events
-    this.watcher.on('add', (p) => this._handleFsCreate(p));
+    this.watcher.on('add', (p) => this._handleFsCreate(p).catch(() => {}));
     this.watcher.on('change', (p) => this._handleFsWrite(p));
     this.watcher.on('unlink', (p) => {
       this.filePositions.delete(p);
@@ -349,7 +344,7 @@ class Watcher extends EventEmitter {
     // Periodic cleanup and discovery
     this._cleanupTimer = setInterval(() => {
       if (!this._running) return;
-      this._cleanupFilePositions();
+      this._cleanupFilePositions().catch(() => {});
     }, CleanupInterval);
 
     this._discoveryTimer = setInterval(() => {
@@ -358,13 +353,13 @@ class Watcher extends EventEmitter {
     }, FsnotifyDiscoveryInterval);
   }
 
-  _watchAncestor(target) {
+  async _watchAncestor(target) {
     let dir = target;
     while (true) {
       const parent = path.dirname(dir);
       if (parent === dir) break;
       try {
-        fs.accessSync(parent);
+        await fsp.access(parent);
         this.watcher.add(parent);
         return;
       } catch {}
@@ -372,20 +367,20 @@ class Watcher extends EventEmitter {
     }
   }
 
-  _addDirectoryWatches(root, maxDepth = 10) {
-    const addRecursive = (dir, depth) => {
+  async _addDirectoryWatches(root, maxDepth = 10) {
+    const addRecursive = async (dir, depth) => {
       if (depth > maxDepth) return;
       try {
-        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        const entries = await fsp.readdir(dir, { withFileTypes: true });
         this.watcher.add(dir);
         for (const entry of entries) {
           if (entry.isDirectory()) {
-            addRecursive(path.join(dir, entry.name), depth + 1);
+            await addRecursive(path.join(dir, entry.name), depth + 1);
           }
         }
       } catch {}
     };
-    addRecursive(root, 0);
+    await addRecursive(root, 0);
   }
 
   _registerSessionWatches(session) {
@@ -406,17 +401,17 @@ class Watcher extends EventEmitter {
   // chokidar event handlers
   // =========================================================================
 
-  _handleFsCreate(p) {
+  async _handleFsCreate(p) {
     let stats;
-    try { stats = fs.statSync(p); } catch { return; }
+    try { stats = await fsp.stat(p); } catch { return; }
 
     if (stats.isDirectory()) {
       this.watcher.add(p);
-      this._scanNewDirectory(p);
+      await this._scanNewDirectory(p);
       if (p === this.claudeDir || this.claudeDir.startsWith(p)) {
         try {
-          fs.accessSync(this.claudeDir);
-          this._addDirectoryWatches(this.claudeDir);
+          await fsp.access(this.claudeDir);
+          await this._addDirectoryWatches(this.claudeDir);
           this.discoverActiveSessions().catch(err => {
             if (this.debug) console.error('[watcher] discoverActiveSessions error:', err.message);
           });
@@ -441,15 +436,15 @@ class Watcher extends EventEmitter {
     }
   }
 
-  _scanNewDirectory(dirPath) {
+  async _scanNewDirectory(dirPath) {
     let entries;
-    try { entries = fs.readdirSync(dirPath, { withFileTypes: true }); } catch { return; }
+    try { entries = await fsp.readdir(dirPath, { withFileTypes: true }); } catch { return; }
     const base = path.basename(dirPath);
     for (const entry of entries) {
       const fullPath = path.join(dirPath, entry.name);
       if (entry.isDirectory()) {
         this.watcher.add(fullPath);
-        this._scanNewDirectory(fullPath);
+        await this._scanNewDirectory(fullPath);
         continue;
       }
       if (base === 'subagents' && entry.name.endsWith('.jsonl')) {
@@ -703,7 +698,20 @@ class Watcher extends EventEmitter {
 
   async _populateToolIndex(session) {
     if (session.toolIndexPopulated) return;
-    session.toolIndexPopulated = true;
+    // If another call is already populating, wait for it
+    if (session._toolIndexPromise) {
+      await session._toolIndexPromise;
+      return;
+    }
+    session._toolIndexPromise = this._doPopulateToolIndex(session);
+    try {
+      await session._toolIndexPromise;
+    } finally {
+      session._toolIndexPromise = null;
+    }
+  }
+
+  async _doPopulateToolIndex(session) {
     const files = [
       { path: session.mainFile, agentID: '' },
       ...Object.entries(session.subagents).map(([id, p]) => ({ path: p, agentID: id })),
@@ -751,6 +759,7 @@ class Watcher extends EventEmitter {
         if (this.debug) console.error('[watcher] _populateToolIndex error reading', filePath + ':', err.message);
       }
     }
+    session.toolIndexPopulated = true;
   }
 
   // =========================================================================
@@ -771,7 +780,7 @@ class Watcher extends EventEmitter {
 
     this._cleanupTimer = setInterval(() => {
       if (!this._running) return;
-      this._cleanupFilePositions();
+      this._cleanupFilePositions().catch(() => {});
     }, CleanupInterval);
   }
 
@@ -890,100 +899,119 @@ class Watcher extends EventEmitter {
       await prev;
 
       let handle;
-      let newPos = this.filePositions.get(filePath) || 0;
+      const pos = this.filePositions.get(filePath) || 0;
+      let newPos = pos;
       try {
         handle = await fsp.open(filePath, 'r');
-        const pos = this.filePositions.get(filePath) || 0;
         const stats = await handle.stat();
-        if (pos >= stats.size) { await handle.close(); handle = null; return; }
-
-        const readLen = stats.size - pos;
-        const buf = Buffer.alloc(readLen);
-        const { bytesRead } = await handle.read(buf, 0, readLen, pos);
-        if (bytesRead === 0) { await handle.close(); handle = null; return; }
+        if (pos > stats.size) {
+          // File was truncated — reset position to 0 so we re-read from the start
+          this.filePositions.set(filePath, 0);
+          await handle.close(); handle = null; return;
+        }
+        if (pos === stats.size) { await handle.close(); handle = null; return; }
 
         newPos = pos;
-        const content = bytesRead < readLen ? buf.toString('utf-8', 0, bytesRead) : buf.toString('utf-8');
-        const rawLines = content.split('\n');
+        // Read in chunks to avoid large buffer allocations for big file deltas
+        let carryOver = ''; // incomplete trailing line from previous chunk
+        const buf = Buffer.alloc(MaxReadChunk);
 
-        // Detect Windows-style CRLF line endings
-        const firstNl = content.indexOf('\n');
-        const crlf = firstNl > 0 && content[firstNl - 1] === '\r';
-        const nlLen = crlf ? 2 : 1;
+        while (true) {
+          const currentStats = await handle.stat();
+          const currentPos = this.filePositions.get(filePath) || 0;
+          if (currentPos >= currentStats.size) break;
 
-        let currentSize;
-        try { currentSize = (await handle.stat()).size; } catch { currentSize = stats.size; }
-        const fileGrew = currentSize > pos + bytesRead;
+          const readLen = Math.min(MaxReadChunk, currentStats.size - currentPos);
+          const { bytesRead } = await handle.read(buf, 0, readLen, currentPos);
+          if (bytesRead === 0) break;
+
+          const chunk = bytesRead < readLen ? buf.toString('utf-8', 0, bytesRead) : buf.toString('utf-8');
+          const combined = carryOver + chunk;
+
+          // Detect CRLF from first newline in the combined text
+          let nlLen = 1;
+          const firstNl = combined.indexOf('\n');
+          if (firstNl > 0 && combined[firstNl - 1] === '\r') nlLen = 2;
+
+          const rawLines = combined.split('\n');
+
+          // If the chunk doesn't end with a newline, the last segment is incomplete.
+          // Save it as carryOver for the next chunk; don't process it yet.
+          if (!chunk.endsWith('\n')) {
+            carryOver = rawLines.pop();
+          } else {
+            // chunk ends with \n — split produces a trailing empty string; clear carryOver
+            carryOver = '';
+          }
+
+          let chunkBytes = 0;
+
+          for (let i = 0; i < rawLines.length; i++) {
+            let rawLine = rawLines[i];
+
+            // Trailing empty after final newline — just advance position
+            if (rawLine === '' && i === rawLines.length - 1 && combined.endsWith('\n')) {
+              chunkBytes += nlLen;
+              continue;
+            }
+
+            // Strip trailing \r for CRLF
+            if (nlLen === 2 && rawLine.endsWith('\r')) {
+              rawLine = rawLine.slice(0, -1);
+            }
+
+            chunkBytes += Buffer.byteLength(rawLine, 'utf-8') + nlLen;
+
+            if (!rawLine.trim()) continue;
+
+            const items = parseLine(rawLine);
+            for (const item of items) {
+              item.sessionID = sessionID;
+
+              if (agentID) {
+                if (!item.agentID) item.agentID = agentID;
+                if (agentType) {
+                  const idx = agentType.lastIndexOf(':');
+                  if (idx >= 0 && idx < agentType.length - 1) {
+                    item.agentName = agentType.slice(idx + 1);
+                  } else {
+                    item.agentName = agentType;
+                  }
+                } else if (!item.agentName || item.agentName.startsWith('Agent-')) {
+                  item.agentName = `Agent-${agentID.slice(0, Math.min(AgentIDDisplayLength, agentID.length))}`;
+                }
+              }
+
+              if (item.toolID) {
+                const session = this.sessions.get(sessionID);
+                if (session) {
+                  const existing = session.toolIndex.get(item.toolID);
+                  if (item.type === 'tool_output') {
+                    if (existing) {
+                      existing.hasResult = true;
+                    } else {
+                      session.toolIndex.set(item.toolID, { toolName: '', parentAgentID: agentID || '', hasResult: true });
+                    }
+                  } else if (item.type === 'tool_input' && !existing) {
+                    session.toolIndex.set(item.toolID, { toolName: item.toolName || '', parentAgentID: agentID || '', hasResult: false });
+                  }
+                }
+              }
+
+              this.emit('item', item);
+            }
+          }
+
+          newPos += chunkBytes;
+          this.filePositions.set(filePath, Math.min(newPos, currentStats.size));
+        }
+
+        // Process any remaining carryOver as a final incomplete line (no trailing \n).
+        // This line may become complete on the next read, so we don't parse it yet.
+        // But we must NOT advance position past it — next read starts from newPos.
 
         await handle.close();
         handle = null;
-
-        for (let i = 0; i < rawLines.length; i++) {
-          const isLast = i === rawLines.length - 1;
-          let rawLine = rawLines[i];
-
-          // Trailing empty line after a final newline — skip it, advance position
-          if (isLast && rawLine === '' && content.endsWith('\n')) {
-            newPos += nlLen;
-            continue;
-          }
-
-          // Last line may be incomplete if file grew mid-read or lacks a trailing newline
-          if (isLast && !content.endsWith('\n')) {
-            // Don't process this line, don't advance position past it.
-            // Next read will re-read from the current newPos and get the complete line.
-            continue;
-          }
-
-          // Strip trailing \r for clean line processing (Windows CRLF)
-          if (crlf && rawLine.endsWith('\r')) {
-            rawLine = rawLine.slice(0, -1);
-          }
-
-          newPos += Buffer.byteLength(rawLine, 'utf-8');
-          newPos += nlLen;
-
-          if (!rawLine.trim()) continue;
-
-          const items = parseLine(rawLine);
-          for (const item of items) {
-            item.sessionID = sessionID;
-
-            if (agentID) {
-              if (!item.agentID) item.agentID = agentID;
-              if (agentType) {
-                const idx = agentType.lastIndexOf(':');
-                if (idx >= 0 && idx < agentType.length - 1) {
-                  item.agentName = agentType.slice(idx + 1);
-                } else {
-                  item.agentName = agentType;
-                }
-              } else if (!item.agentName || item.agentName.startsWith('Agent-')) {
-                item.agentName = `Agent-${agentID.slice(0, Math.min(AgentIDDisplayLength, agentID.length))}`;
-              }
-            }
-
-            if (item.toolID) {
-              const session = this.sessions.get(sessionID);
-              if (session) {
-                const existing = session.toolIndex.get(item.toolID);
-                if (item.type === 'tool_output') {
-                  if (existing) {
-                    existing.hasResult = true;
-                  } else {
-                    session.toolIndex.set(item.toolID, { toolName: '', parentAgentID: agentID || '', hasResult: true });
-                  }
-                } else if (item.type === 'tool_input' && !existing) {
-                  session.toolIndex.set(item.toolID, { toolName: item.toolName || '', parentAgentID: agentID || '', hasResult: false });
-                }
-              }
-            }
-
-            this.emit('item', item);
-          }
-        }
-
-        this.filePositions.set(filePath, Math.min(newPos, stats.size));
       } catch (err) {
         if (newPos !== undefined) {
           this.filePositions.set(filePath, newPos);
@@ -1028,9 +1056,9 @@ class Watcher extends EventEmitter {
     }
   }
 
-  _cleanupFilePositions() {
+  async _cleanupFilePositions() {
     for (const p of this.filePositions.keys()) {
-      try { fs.accessSync(p); } catch {
+      try { await fsp.access(p); } catch {
         this.filePositions.delete(p);
         this.fileContexts.delete(p);
       }
@@ -1040,7 +1068,7 @@ class Watcher extends EventEmitter {
     const now = Date.now();
     for (const [sessionID, session] of this.sessions) {
       let stats;
-      try { stats = fs.statSync(session.mainFile); } catch {
+      try { stats = await fsp.stat(session.mainFile); } catch {
         this.removeSession(sessionID);
         this.emit('broadcast', 'sessionRemoved', { sessionID });
         continue;
@@ -1139,24 +1167,28 @@ async function _listSessionsFiltered(limit, activeWithin) {
   const sessions = [];
   const now = Date.now();
 
+  const candidates = [];
   try {
     await _walkDirStatic(claudeDir, (filePath, stats) => {
       if (!isMainSessionFile(filePath, stats)) return;
       if (activeWithin > 0 && (now - stats.mtimeMs) > activeWithin) return;
-
-      const basename = path.basename(filePath);
-      const projectDir = path.basename(path.dirname(filePath));
-      const projectPath = resolveProjectPath(projectDir);
-
-      sessions.push({
-        id: basename.replace(/\.jsonl$/, ''),
-        path: filePath,
-        projectPath,
-        modified: stats.mtime,
-        isActive: (now - stats.mtimeMs) < RecentActivityThreshold,
-      });
+      candidates.push({ filePath, stats });
     });
   } catch {}
+
+  for (const c of candidates) {
+    const basename = path.basename(c.filePath);
+    const projectDir = path.basename(path.dirname(c.filePath));
+    const projectPath = await resolveProjectPath(projectDir);
+
+    sessions.push({
+      id: basename.replace(/\.jsonl$/, ''),
+      path: c.filePath,
+      projectPath,
+      modified: c.stats.mtime,
+      isActive: (now - c.stats.mtimeMs) < RecentActivityThreshold,
+    });
+  }
 
   sessions.sort((a, b) => b.modified - a.modified);
   if (limit > 0 && sessions.length > limit) sessions.length = limit;

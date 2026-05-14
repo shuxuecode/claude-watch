@@ -338,43 +338,22 @@ let lastMsgTime = 0;
 let staleCheckTimer = null;
 
 let sessions = [];
+let sessionsMap = new Map(); // id -> session, for O(1) lookups
 let treeNodes = [];
 let treeCursor = 0;
 let streamItems = [];
-const seenToolIDsKeys = [];
-const seenToolIDsSet = new Set();
-const seenToolIDsMax = 5000;
-
-function seenToolIDsHas(key) {
-  return seenToolIDsSet.has(key);
+let visibleItems = [];
+let visibleDirty = true;
+// LRU cache: recently accessed keys survive eviction, so a tool_input's ID
+// stays alive long enough for its matching tool_output to arrive and merge.
+class LRUCache {
+  constructor(max) { this.max = max; this.map = new Map(); }
+  has(key) { if (!this.map.has(key)) return false; const v = this.map.get(key); this.map.delete(key); this.map.set(key, v); return true; }
+  get(key) { if (!this.map.has(key)) return undefined; const v = this.map.get(key); this.map.delete(key); this.map.set(key, v); return v; }
+  set(key, val) { if (this.map.has(key)) this.map.delete(key); this.map.set(key, val); if (this.map.size > this.max) { const oldest = this.map.keys().next().value; this.map.delete(oldest); } }
 }
-function seenToolIDsAdd(key) {
-  seenToolIDsSet.add(key);
-  seenToolIDsKeys.push(key);
-  if (seenToolIDsKeys.length > seenToolIDsMax) {
-    const evictCount = seenToolIDsKeys.length >> 1;
-    for (let i = 0; i < evictCount; i++) {
-      seenToolIDsSet.delete(seenToolIDsKeys[i]);
-    }
-    seenToolIDsKeys.splice(0, evictCount);
-  }
-}
-const toolNameMapMax = 2000;
-let toolNameMap = new Map();  // toolID -> toolName
-let toolNameMapKeys = [];
-
-function toolNameMapSet(toolID, toolName) {
-  if (toolNameMap.has(toolID)) return;
-  toolNameMap.set(toolID, toolName);
-  toolNameMapKeys.push(toolID);
-  if (toolNameMapKeys.length > toolNameMapMax) {
-    const evictCount = toolNameMapKeys.length >> 1;
-    for (let i = 0; i < evictCount; i++) {
-      toolNameMap.delete(toolNameMapKeys[i]);
-    }
-    toolNameMapKeys.splice(0, evictCount);
-  }
-}
+const seenToolIDs = new LRUCache(5000);
+const toolNameMap = new LRUCache(2000);
 let filters = new Map();
 
 let showThinking = true;
@@ -407,6 +386,7 @@ const MAX_ITEMS = 3000;
 const MAX_LINES = 50;
 let renderedItemCount = 0;
 let needsFullRender = true;
+  visibleDirty = true;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Markdown renderer (marked + highlight.js)
@@ -525,7 +505,7 @@ function sendCmd(action, extra = {}) {
 function handleSnapshot(payload) {
   autoDiscovery = payload.autoDiscovery;
   for (const s of (payload.sessions || [])) {
-    let session = sessions.find(x => x.id === s.id);
+    let session = sessionsMap.get(s.id);
     if (!session) {
       session = {
         id: s.id, projectPath: s.projectPath, title: '',
@@ -534,6 +514,7 @@ function handleSnapshot(payload) {
         lastActivity: Date.now(),
       };
       sessions.push(session);
+      sessionsMap.set(session.id, session);
       session.agents.push({ id: '', name: 'Main', type: 'main' });
     }
     session.lastActivity = Date.now();
@@ -555,26 +536,30 @@ function handleSnapshot(payload) {
   updateFilters();
   rebuildNodes();
   needsFullRender = true;
+  visibleDirty = true;
   scheduleRender();
 }
 
 function handleNewSession(payload) {
-  if (sessions.find(s => s.id === payload.sessionID)) return;
-  sessions.push({
+  if (sessionsMap.has(payload.sessionID)) return;
+  const session = {
     id: payload.sessionID, projectPath: payload.projectPath,
     title: '', folder: folderName(payload.projectPath), model: '',
     agents: [{ id: '', name: 'Main', type: 'main' }],
     tasks: [], collapsed: false, pinned: false,
     lastActivity: Date.now(),
-  });
+  };
+  sessions.push(session);
+  sessionsMap.set(session.id, session);
   updateFilters();
   rebuildNodes();
   needsFullRender = true;
+  visibleDirty = true;
   scheduleRender();
 }
 
 function handleNewAgent(payload) {
-  const s = sessions.find(s => s.id === payload.sessionID);
+  const s = sessionsMap.get(payload.sessionID);
   if (!s || s.agents.find(a => a.id === payload.agentID)) return;
   s.agents.push({
     id: payload.agentID,
@@ -584,11 +569,12 @@ function handleNewAgent(payload) {
   updateFilters();
   rebuildNodes();
   needsFullRender = true;
+  visibleDirty = true;
   scheduleRender();
 }
 
 function handleNewBgTask(payload) {
-  const s = sessions.find(s => s.id === payload.sessionID);
+  const s = sessionsMap.get(payload.sessionID);
   if (!s || s.tasks.find(t => t.id === payload.toolID)) return;
   s.tasks.push({
     id: payload.toolID, parentAgentID: payload.parentAgentID,
@@ -608,6 +594,7 @@ function handleSessionRemoved(payload) {
   updateFilters();
   rebuildNodes();
   needsFullRender = true;
+  visibleDirty = true;
   scheduleRender();
 }
 
@@ -617,13 +604,13 @@ function handleSessionRemoved(payload) {
 
 function handleItem(item) {
   if (item.type === 'session_title') {
-    const s = sessions.find(s => s.id === item.sessionID);
+    const s = sessionsMap.get(item.sessionID);
     if (s) { s.title = item.content.slice(0, 30); }
     scheduleRender();
     return;
   }
   // Update activity
-  const s = sessions.find(s => s.id === item.sessionID);
+  const s = sessionsMap.get(item.sessionID);
   if (s) s.lastActivity = Date.now();
   pushItem(item);
   scheduleRender();
@@ -632,7 +619,7 @@ function handleItem(item) {
 function handleItemBatch(items) {
   for (const item of items) {
     if (item.type === 'session_title') {
-      const s = sessions.find(s => s.id === item.sessionID);
+      const s = sessionsMap.get(item.sessionID);
       if (s) { s.title = item.content.slice(0, 30); }
       continue;
     }
@@ -646,24 +633,28 @@ function pushItem(item) {
   // to avoid divergence between frontend accumulation and server tracking
 
   if (item.model) {
-    const s = sessions.find(s => s.id === item.sessionID);
+    const s = sessionsMap.get(item.sessionID);
     if (s) s.model = item.model;
   }
 
   if (item.type === 'tool_input' && item.toolID && item.toolName) {
-    toolNameMapSet(item.toolID, item.toolName);
+    toolNameMap.set(item.toolID, item.toolName);
   }
 
   if (item.toolID) {
     const key = `${item.toolID}:${item.type}`;
-    if (seenToolIDsHas(key)) return;
-    seenToolIDsAdd(key);
+    if (seenToolIDs.has(key)) return;
+    seenToolIDs.set(key, true);
   }
 
   streamItems.push(item);
   if (streamItems.length > MAX_ITEMS) {
     streamItems = streamItems.slice(-MAX_ITEMS);
-    needsFullRender = true;
+    visibleDirty = true;
+  }
+  // Incrementally update visibleItems — no need to re-filter on every item
+  if (!visibleDirty && isItemVisible(item)) {
+    visibleItems.push(item);
   }
 }
 
@@ -830,7 +821,13 @@ function isSessionActive(session) {
 // ══════════════════════════════════════════════════════════════════════════════
 
 function renderStream() {
-  const visible = streamItems.filter(isItemVisible);
+  // Rebuild visibleItems from scratch only when filters/toggles changed
+  if (visibleDirty) {
+    visibleItems = streamItems.filter(isItemVisible);
+    visibleDirty = false;
+  }
+
+  const visible = visibleItems;
   const wasAutoScroll = autoScroll;
 
   if (needsFullRender || renderedItemCount > visible.length) {
@@ -1131,11 +1128,16 @@ function removeSelectedSession() {
 // Toggles
 // ══════════════════════════════════════════════════════════════════════════════
 
-function toggleThinking() { showThinking = !showThinking; needsFullRender = true; renderStream(); refreshButtons(); }
-function toggleToolInput() { showToolInput = !showToolInput; needsFullRender = true; renderStream(); refreshButtons(); }
-function toggleToolOutput() { showToolOutput = !showToolOutput; needsFullRender = true; renderStream(); refreshButtons(); }
-function toggleText() { showText = !showText; needsFullRender = true; renderStream(); refreshButtons(); }
-function toggleHook() { showHook = !showHook; needsFullRender = true; renderStream(); refreshButtons(); }
+function toggleThinking() { showThinking = !showThinking; needsFullRender = true;
+  visibleDirty = true; renderStream(); refreshButtons(); }
+function toggleToolInput() { showToolInput = !showToolInput; needsFullRender = true;
+  visibleDirty = true; renderStream(); refreshButtons(); }
+function toggleToolOutput() { showToolOutput = !showToolOutput; needsFullRender = true;
+  visibleDirty = true; renderStream(); refreshButtons(); }
+function toggleText() { showText = !showText; needsFullRender = true;
+  visibleDirty = true; renderStream(); refreshButtons(); }
+function toggleHook() { showHook = !showHook; needsFullRender = true;
+  visibleDirty = true; renderStream(); refreshButtons(); }
 function toggleAutoScroll() { autoScroll = !autoScroll; if (autoScroll) streamEl.scrollTop = streamEl.scrollHeight; renderAll(); }
 function toggleTree() { showTree = !showTree; document.getElementById('tree-panel').classList.toggle('hidden', !showTree); }
 function toggleAutoDiscovery() { sendCmd('toggleAutoDiscovery'); }
@@ -1276,6 +1278,7 @@ function fmtTok(n) {
 
 function renderAll() {
   needsFullRender = true;
+  visibleDirty = true;
   renderTree();
   renderStream();
   refreshButtons();

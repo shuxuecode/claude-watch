@@ -113,7 +113,7 @@ describe('Watcher class', () => {
   it('should initialize with default options', () => {
     const w = new watcherModule.Watcher({});
     assert.strictEqual(w.pollInterval, 500);
-    assert.strictEqual(w.activeWindow, 5 * 60 * 1000);
+    assert.strictEqual(w.activeWindow, 100 * 60 * 1000);
     assert.strictEqual(w.maxSessions, 0);
     assert.strictEqual(w.sessions.size, 0);
     assert.strictEqual(w.filePositions.size, 0);

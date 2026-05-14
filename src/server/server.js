@@ -33,9 +33,12 @@ class DashboardServer {
     this.itemBuffer = [];
     this.contextMap = new Map();
     this._contextCleanupTimer = null;
+    this._pendingItems = [];
+    this._flushTimer = null;
 
     this.server = null;
     this.wss = null;
+    this._heartbeatTimer = null;
 
     setDebugAll(options.debugAll || false);
     this.debugAll = options.debugAll || false;
@@ -180,7 +183,16 @@ class DashboardServer {
       const filePath = params.get('path');
       if (!filePath) { this.sendJSON(res, { error: 'Missing path param' }, 400); return; }
       const resolved = path.resolve(filePath);
-      if (!resolved.startsWith(path.resolve(os.homedir(), '.claude', 'projects'))) {
+      const allowedPrefix = path.resolve(os.homedir(), '.claude', 'projects');
+      // Resolve symlinks before prefix check to prevent symlink-based path traversal
+      try {
+        const realPath = await fs.promises.realpath(resolved);
+        if (!realPath.startsWith(allowedPrefix)) {
+          this.sendJSON(res, { error: 'Access denied' }, 403);
+          return;
+        }
+      } catch {
+        // realpath fails for non-existent files — block them
         this.sendJSON(res, { error: 'Access denied' }, 403);
         return;
       }
@@ -296,7 +308,19 @@ class DashboardServer {
         this.itemBuffer = this.itemBuffer.slice(-MAX_ITEM_BUFFER);
       }
       this.updateContext(item);
-      this.broadcast('item', item);
+      this._pendingItems.push(item);
+      if (!this._flushTimer) {
+        this._flushTimer = setTimeout(() => {
+          this._flushTimer = null;
+          const batch = this._pendingItems;
+          this._pendingItems = [];
+          if (batch.length === 1) {
+            this.broadcast('item', batch[0]);
+          } else if (batch.length > 1) {
+            this.broadcast('itemBatch', batch);
+          }
+        }, 50);
+      }
     });
     w.on('broadcast', (type, payload) => {
       this.broadcast(type, payload);
@@ -334,11 +358,23 @@ class DashboardServer {
             if (process.platform === 'win32') {
               cp.execSync(`taskkill /PID ${parsedPid} /F`, { encoding: 'utf-8' });
             } else {
-              process.kill(parsedPid, 'SIGKILL');
+              process.kill(parsedPid, 'SIGTERM');
             }
           } catch {}
         }
       }
+
+      // Wait for graceful shutdown, then escalate to SIGKILL if still alive
+      if (process.platform !== 'win32') {
+        await new Promise(r => setTimeout(r, 3000));
+        for (const pid of pids) {
+          const parsedPid = parseInt(pid, 10);
+          if (Number.isInteger(parsedPid) && parsedPid > 0) {
+            try { process.kill(parsedPid, 0); process.kill(parsedPid, 'SIGKILL'); } catch {}
+          }
+        }
+      }
+
       // Wait briefly for the port to be released
       await new Promise(r => setTimeout(r, 500));
       return true;
@@ -380,7 +416,7 @@ class DashboardServer {
       });
     });
 
-    this.wss = new WebSocketServer({ server: this.server });
+    this.wss = new WebSocketServer({ server: this.server, maxPayload: 1024 * 1024 });
     this.wss.on('connection', (ws) => this.onWsConnection(ws));
 
     // Register error handler once (not inside doListen to avoid accumulation)
@@ -406,6 +442,7 @@ class DashboardServer {
     }
 
     this._contextCleanupTimer = setInterval(() => this.cleanupContextMap(), CONTEXT_STALE_MS);
+    this._heartbeatTimer = setInterval(() => this.broadcast('heartbeat', null), 30000);
 
     // Start listening and wait for server to be ready before opening browser
     await new Promise((resolve) => {
@@ -438,6 +475,8 @@ class DashboardServer {
 
   stop() {
     if (this._contextCleanupTimer) clearInterval(this._contextCleanupTimer);
+    if (this._heartbeatTimer) clearInterval(this._heartbeatTimer);
+    if (this._flushTimer) clearTimeout(this._flushTimer);
     if (this.wss) this.wss.close();
     if (this.server) this.server.close();
     if (this.watcher) this.watcher.stop();
