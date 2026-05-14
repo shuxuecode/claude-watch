@@ -456,8 +456,16 @@ class Watcher extends EventEmitter {
   }
 
   _handleFsWrite(p) {
-    const ctx = this.fileContexts.get(p);
-    if (!ctx) return;
+    let ctx = this.fileContexts.get(p);
+
+    // If fileContexts is missing (race condition during async session registration),
+    // try to infer the session context from the path
+    if (!ctx) {
+      ctx = this._inferFileContext(p);
+      if (!ctx) return;
+      // Register it so future events are found directly
+      this.fileContexts.set(p, ctx);
+    }
 
     // Debounce
     const existing = this.debounceTimers.get(p);
@@ -474,6 +482,28 @@ class Watcher extends EventEmitter {
       }
     }, DebounceInterval);
     this.debounceTimers.set(p, timer);
+  }
+
+  _inferFileContext(p) {
+    if (!p.endsWith('.jsonl')) return null;
+
+    // Subagent file: infer sessionID and agentID from path structure
+    if (p.includes('/subagents/')) {
+      const subagentsDir = path.dirname(p);
+      const sessionDir = path.dirname(subagentsDir);
+      const sessionID = path.basename(sessionDir);
+      const agentID = path.basename(p).replace(/^agent-/, '').replace(/\.jsonl$/, '');
+      const session = this.sessions.get(sessionID);
+      if (!session) return null;
+      return { sessionID, agentID };
+    }
+
+    // Main session file: infer sessionID from filename
+    const basename = path.basename(p);
+    const sessionID = basename.replace(/\.jsonl$/, '');
+    const session = this.sessions.get(sessionID);
+    if (!session) return null;
+    return { sessionID, agentID: '' };
   }
 
   // =========================================================================
@@ -498,6 +528,12 @@ class Watcher extends EventEmitter {
     // Broadcast pre-existing subagents to frontend
     for (const [agentID, agentType] of Object.entries(session.subagentTypes)) {
       this.emit('broadcast', 'newAgent', { sessionID: session.id, agentID, agentType });
+    }
+
+    // Read initial data from the new session's files
+    if (this.useFsnotify) {
+      await this._skipToEndOfFiles(session);
+      await this._readSessionFiles(session);
     }
 
     // Process any subagent files that arrived before the session was discovered
@@ -537,6 +573,13 @@ class Watcher extends EventEmitter {
 
     this._addFileWatch(p, sessionID, agentID);
     this.emit('broadcast', 'newAgent', { sessionID, agentID, agentType });
+
+    // Read initial data from the new subagent file
+    if (this.useFsnotify) {
+      const pos = await this._findPositionForLastNLines(p, KeepRecentLines);
+      this.filePositions.set(p, pos);
+      await this._readFile(p, sessionID, agentID, agentType);
+    }
   }
 
   async _handleNewToolResultFile(p) {
@@ -610,6 +653,8 @@ class Watcher extends EventEmitter {
 
       if (this.useFsnotify) {
         this._registerSessionWatches(c.session);
+        await this._skipToEndOfFiles(c.session);
+        await this._readSessionFiles(c.session);
       }
 
       this.emit('broadcast', 'newSession', { sessionID: c.session.id, projectPath: c.session.projectPath });
@@ -914,15 +959,16 @@ class Watcher extends EventEmitter {
         newPos = pos;
         // Read in chunks to avoid large buffer allocations for big file deltas
         let carryOver = ''; // incomplete trailing line from previous chunk
+        let carryOverBytes = 0; // byte length of carryOver (to avoid re-reading it)
         const buf = Buffer.alloc(MaxReadChunk);
 
         while (true) {
           const currentStats = await handle.stat();
-          const currentPos = this.filePositions.get(filePath) || 0;
-          if (currentPos >= currentStats.size) break;
+          const readFrom = newPos + carryOverBytes;
+          if (readFrom >= currentStats.size) break;
 
-          const readLen = Math.min(MaxReadChunk, currentStats.size - currentPos);
-          const { bytesRead } = await handle.read(buf, 0, readLen, currentPos);
+          const readLen = Math.min(MaxReadChunk, currentStats.size - readFrom);
+          const { bytesRead } = await handle.read(buf, 0, readLen, readFrom);
           if (bytesRead === 0) break;
 
           const chunk = bytesRead < readLen ? buf.toString('utf-8', 0, bytesRead) : buf.toString('utf-8');
@@ -939,9 +985,11 @@ class Watcher extends EventEmitter {
           // Save it as carryOver for the next chunk; don't process it yet.
           if (!chunk.endsWith('\n')) {
             carryOver = rawLines.pop();
+            carryOverBytes = Buffer.byteLength(carryOver, 'utf-8');
           } else {
             // chunk ends with \n — split produces a trailing empty string; clear carryOver
             carryOver = '';
+            carryOverBytes = 0;
           }
 
           let chunkBytes = 0;
