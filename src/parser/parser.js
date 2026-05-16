@@ -43,7 +43,8 @@ function setDebugAll(val) {
 
 function agentDisplayName(agentID) {
   if (!agentID) return 'Main';
-  return `Agent-${agentID.slice(0, Math.min(AgentIDDisplayLength, agentID.length))}`;
+  var id = String(agentID);
+  return 'Agent-' + id.slice(0, Math.min(AgentIDDisplayLength, id.length));
 }
 
 // ============================================================================
@@ -281,7 +282,7 @@ function diagnosticsBody(diagnostics) {
 // ============================================================================
 
 function parsePRLink(raw, timestamp) {
-  if (!raw.prNumber && !raw.prUrl) return [];
+  if (raw.prNumber == null && !raw.prUrl) return [];
   let content;
   if (raw.prRepository && raw.prUrl) {
     content = `PR #${raw.prNumber} ${raw.prRepository} \u2192 ${raw.prUrl}`;
@@ -441,8 +442,8 @@ function formatToolInput(toolName, input) {
       if (inp.path) return `${inp.pattern} in ${inp.path}`;
       return inp.pattern || '';
     case 'Grep':
-      if (inp.path) return `/${inp.pattern}/ in ${inp.path}`;
-      return `/${inp.pattern}/`;
+      if (inp.path) return `/${inp.pattern || ''}/ in ${inp.path}`;
+      return `/${inp.pattern || ''}/`;
     case 'WebFetch':
       return inp.prompt || '';
     case 'WebSearch':
@@ -493,4 +494,8 @@ module.exports = {
   contextWindowFor,
   formatTokenCount,
   AgentIDDisplayLength,
+  formatToolInput,
+  prettyToolName,
+  agentDisplayName,
+  MAX_TOOL_INPUT_LENGTH,
 };

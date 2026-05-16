@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>claude-watch</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="stylesheet" href="vendor/github-dark.min.css">
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -386,7 +387,6 @@ const MAX_ITEMS = 3000;
 const MAX_LINES = 50;
 let renderedItemCount = 0;
 let needsFullRender = true;
-  visibleDirty = true;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Markdown renderer (marked + highlight.js)
@@ -588,8 +588,8 @@ function handleNewBgTask(payload) {
 function handleSessionRemoved(payload) {
   const idx = sessions.findIndex(s => s.id === payload.sessionID);
   if (idx >= 0) {
-    const session = sessions.splice(idx, 1)[0];
-    sessions.push(session);
+    sessions.splice(idx, 1);
+    sessionsMap.delete(payload.sessionID);
   }
   updateFilters();
   rebuildNodes();
@@ -733,7 +733,7 @@ function getNodeHTML(node, idx) {
     return `<div class="tree-row${selClass ? ' selected' : ''}">
       <div class="tree-node" onclick="treeClick(${idx})" data-idx="${idx}">
         <span class="tree-prefix">${treePrefix(node)}</span>${activeDot} ${node.collapsed ? '▸' : '▾'} ${esc(displayName)}
-        ${node.collapsed && agentCount > 0 ? `(${agentCount})` : ''}
+        ${node.collapsed && agentCount > 0 ? `(${esc(String(agentCount))})` : ''}
         ${subInfo}
       </div>
       <span class="tree-actions">
@@ -1112,11 +1112,11 @@ function removeSelectedSession() {
   if (node.type === 'session') sid = node.id;
   else sid = node.sessionID;
   if (!sid) return;
-  if (!confirm(`Move session ${sid.slice(0, 12)}... to bottom?`)) return;
+  if (!confirm(`Remove session ${sid.slice(0, 12)}...?`)) return;
   const idx = sessions.findIndex(s => s.id === sid);
   if (idx >= 0) {
-    const session = sessions.splice(idx, 1)[0];
-    sessions.push(session);
+    sessions.splice(idx, 1);
+    sessionsMap.delete(sid);
   }
   sendCmd('removeSession', { sessionID: sid });
   updateFilters();

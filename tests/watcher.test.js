@@ -34,20 +34,8 @@ describe('Watcher helpers', () => {
     });
   });
 
-  describe('parseDuration (from CLI)', () => {
-    // parseDuration is in bin/, but we test the logic here
-    function parseDuration(s) {
-      const match = s.match(/^(\d+)(ms|s|m|h)$/);
-      if (!match) throw new Error(`Invalid duration: ${s}`);
-      const val = parseInt(match[1], 10);
-      switch (match[2]) {
-        case 'ms': return val;
-        case 's': return val * 1000;
-        case 'm': return val * 60 * 1000;
-        case 'h': return val * 3600 * 1000;
-        default: throw new Error(`Invalid duration unit: ${match[2]}`);
-      }
-    }
+  describe('parseDuration (from cli-helpers)', () => {
+    const { parseDuration } = require('../src/cli-helpers');
 
     it('should parse milliseconds', () => {
       assert.strictEqual(parseDuration('500ms'), 500);
@@ -407,5 +395,341 @@ describe('Watcher class', () => {
       w.sessions.set('s1', session);
       assert.strictEqual(w._lookupAgentType('s1', 'a1'), '');
     });
+  });
+});
+
+// ============================================================================
+// _readFile (Priority 1: core data path)
+// ============================================================================
+
+describe('_readFile', () => {
+  let tmpDir;
+
+  before(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'readfile-test-'));
+  });
+
+  after(() => {
+    try { fs.rmSync(tmpDir, { recursive: true }); } catch {}
+  });
+
+  function makeTestLine(text) {
+    return JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] }, timestamp: '2025-01-01T12:00:00Z' });
+  }
+
+  function setupWatcherAndSession(filePath, sessionID = 's1') {
+    const w = new watcherModule.Watcher({});
+    const items = [];
+    const errors = [];
+    w.on('item', (item) => items.push(item));
+    w.on('error', (err) => errors.push(err));
+    const session = new watcherModule.Session(sessionID, '/proj', filePath);
+    w.sessions.set(sessionID, session);
+    w.filePositions.set(filePath, 0);
+    return { w, items, errors, session };
+  }
+
+  it('should read entire file from position 0', async () => {
+    const filePath = path.join(tmpDir, 'full-read.jsonl');
+    fs.writeFileSync(filePath, makeTestLine('hello') + '\n' + makeTestLine('world') + '\n');
+    const { w, items } = setupWatcherAndSession(filePath);
+
+    await w._readFile(filePath, 's1', '', '');
+
+    assert.strictEqual(items.length, 2);
+    assert.strictEqual(items[0].content, 'hello');
+    assert.strictEqual(items[1].content, 'world');
+    assert.strictEqual(items[0].sessionID, 's1');
+  });
+
+  it('should read incrementally from existing position', async () => {
+    const filePath = path.join(tmpDir, 'incremental.jsonl');
+    fs.writeFileSync(filePath, makeTestLine('first') + '\n');
+    const { w, items } = setupWatcherAndSession(filePath);
+
+    await w._readFile(filePath, 's1', '', '');
+    assert.strictEqual(items.length, 1);
+    assert.strictEqual(items[0].content, 'first');
+
+    fs.appendFileSync(filePath, makeTestLine('second') + '\n');
+    await w._readFile(filePath, 's1', '', '');
+    assert.strictEqual(items.length, 2);
+    assert.strictEqual(items[1].content, 'second');
+  });
+
+  it('should detect file truncation and reset position', async () => {
+    const filePath = path.join(tmpDir, 'truncated.jsonl');
+    fs.writeFileSync(filePath, makeTestLine('long content here') + '\n');
+    const { w } = setupWatcherAndSession(filePath);
+
+    await w._readFile(filePath, 's1', '', '');
+    assert.ok(w.filePositions.get(filePath) > 0);
+
+    fs.writeFileSync(filePath, makeTestLine('short') + '\n');
+    await w._readFile(filePath, 's1', '', '');
+    assert.strictEqual(w.filePositions.get(filePath), 0);
+  });
+
+  it('should return immediately when no new data', async () => {
+    const filePath = path.join(tmpDir, 'no-new-data.jsonl');
+    fs.writeFileSync(filePath, makeTestLine('data') + '\n');
+    const { w, items } = setupWatcherAndSession(filePath);
+
+    await w._readFile(filePath, 's1', '', '');
+    assert.strictEqual(items.length, 1);
+
+    const items2 = [];
+    w.on('item', (item) => items2.push(item));
+    await w._readFile(filePath, 's1', '', '');
+    assert.strictEqual(items2.length, 0);
+  });
+
+  it('should skip empty lines', async () => {
+    const filePath = path.join(tmpDir, 'empty-lines.jsonl');
+    fs.writeFileSync(filePath, makeTestLine('a') + '\n\n\n' + makeTestLine('b') + '\n');
+    const { w, items } = setupWatcherAndSession(filePath);
+
+    await w._readFile(filePath, 's1', '', '');
+    assert.strictEqual(items.length, 2);
+  });
+
+  it('should assign agentID and agentName for subagent reads', async () => {
+    const filePath = path.join(tmpDir, 'subagent-read.jsonl');
+    fs.writeFileSync(filePath, makeTestLine('sub work') + '\n');
+    const { w, items, session } = setupWatcherAndSession(filePath);
+    session.subagentTypes['abc1234567'] = 'type:Builder';
+
+    await w._readFile(filePath, 's1', 'abc1234567', 'type:Builder');
+    assert.strictEqual(items[0].agentID, 'abc1234567');
+    assert.strictEqual(items[0].agentName, 'Builder');
+  });
+
+  it('should serialize concurrent reads via readLock', async () => {
+    const filePath = path.join(tmpDir, 'lock-test.jsonl');
+    fs.writeFileSync(filePath, makeTestLine('test') + '\n');
+    const { w } = setupWatcherAndSession(filePath);
+
+    await Promise.all([
+      w._readFile(filePath, 's1', '', ''),
+      w._readFile(filePath, 's1', '', ''),
+    ]);
+    assert.strictEqual(w._readLocks.has(filePath), false);
+  });
+
+  it('should handle large files requiring chunk reads', async () => {
+    const filePath = path.join(tmpDir, 'large-file.jsonl');
+    const lines = [];
+    for (let i = 0; i < 40; i++) {
+      lines.push(JSON.stringify({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'text', text: `line-${i}-${'x'.repeat(2000)}` }] },
+        timestamp: '2025-01-01T12:00:00Z',
+      }));
+    }
+    fs.writeFileSync(filePath, lines.join('\n') + '\n');
+    const { w, items } = setupWatcherAndSession(filePath);
+
+    await w._readFile(filePath, 's1', '', '');
+    assert.strictEqual(items.length, 40);
+    assert.strictEqual(w.filePositions.get(filePath), fs.statSync(filePath).size);
+  });
+
+  it('should handle CRLF line endings', async () => {
+    const filePath = path.join(tmpDir, 'crlf.jsonl');
+    fs.writeFileSync(filePath, makeTestLine('crlf-test') + '\r\n' + makeTestLine('crlf-second') + '\r\n');
+    const { w, items } = setupWatcherAndSession(filePath);
+
+    await w._readFile(filePath, 's1', '', '');
+    assert.strictEqual(items.length, 2);
+    assert.strictEqual(items[0].content, 'crlf-test');
+    assert.strictEqual(items[1].content, 'crlf-second');
+  });
+
+  it('should handle non-existent file gracefully', async () => {
+    const filePath = path.join(tmpDir, 'does-not-exist.jsonl');
+    const { w, errors } = setupWatcherAndSession(filePath);
+
+    await w._readFile(filePath, 's1', '', '');
+    assert.ok(errors.length > 0);
+  });
+
+  it('should track tool use/result in toolIndex', async () => {
+    const filePath = path.join(tmpDir, 'tool-index.jsonl');
+    const line1 = JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'ls' } }] }, timestamp: '2025-01-01T12:00:00Z' });
+    const line2 = JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'ok' }] }, timestamp: '2025-01-01T12:00:01Z' });
+    fs.writeFileSync(filePath, line1 + '\n' + line2 + '\n');
+    const { w, session } = setupWatcherAndSession(filePath);
+
+    await w._readFile(filePath, 's1', '', '');
+    const entry = session.toolIndex.get('toolu_1');
+    assert.ok(entry);
+    assert.strictEqual(entry.toolName, 'Bash');
+    assert.strictEqual(entry.hasResult, true);
+  });
+
+  it('should advance position correctly after reading', async () => {
+    const filePath = path.join(tmpDir, 'position-track.jsonl');
+    const line = makeTestLine('hello');
+    fs.writeFileSync(filePath, line + '\n');
+    const { w } = setupWatcherAndSession(filePath);
+
+    await w._readFile(filePath, 's1', '', '');
+    assert.strictEqual(w.filePositions.get(filePath), Buffer.byteLength(line + '\n', 'utf-8'));
+  });
+});
+
+// ============================================================================
+// _inferFileContext
+// ============================================================================
+
+describe('_inferFileContext', () => {
+  it('should return null for non-jsonl files', () => {
+    const w = new watcherModule.Watcher({});
+    assert.strictEqual(w._inferFileContext('/some/path/file.txt'), null);
+    assert.strictEqual(w._inferFileContext('/some/path/file.js'), null);
+  });
+
+  it('should infer context for main session file', () => {
+    const w = new watcherModule.Watcher({});
+    const session = new watcherModule.Session('abc123', '/proj', '/path/abc123.jsonl');
+    w.sessions.set('abc123', session);
+
+    const ctx = w._inferFileContext('/path/abc123.jsonl');
+    assert.ok(ctx);
+    assert.strictEqual(ctx.sessionID, 'abc123');
+    assert.strictEqual(ctx.agentID, '');
+  });
+
+  it('should infer context for subagent file', () => {
+    const w = new watcherModule.Watcher({});
+    const session = new watcherModule.Session('sess1', '/proj', '/path/sess1.jsonl');
+    w.sessions.set('sess1', session);
+
+    const ctx = w._inferFileContext('/path/sess1/subagents/agent-sub1.jsonl');
+    assert.ok(ctx);
+    assert.strictEqual(ctx.sessionID, 'sess1');
+    assert.strictEqual(ctx.agentID, 'sub1');
+  });
+
+  it('should return null for unknown session', () => {
+    const w = new watcherModule.Watcher({});
+    assert.strictEqual(w._inferFileContext('/path/unknown.jsonl'), null);
+  });
+});
+
+// ============================================================================
+// resolveProjectPath (Priority 8)
+// ============================================================================
+
+describe('resolveProjectPath', () => {
+  it('should resolve real project path from encoded name', async () => {
+    // The current project path should exist: /Users/eleme/zhaoshuxue/claude-watch
+    const encoded = '-Users-eleme-zhaoshuxue-claude-watch';
+    const result = await watcherModule.resolveProjectPath(encoded);
+    assert.strictEqual(result, 'Users/eleme/zhaoshuxue/claude-watch');
+  });
+
+  it('should fallback to naive conversion for non-existent path', async () => {
+    const result = await watcherModule.resolveProjectPath('nonexistent-dir-path');
+    assert.strictEqual(result, 'nonexistent/dir/path');
+  });
+
+  it('should handle leading dash', async () => {
+    const result = await watcherModule.resolveProjectPath('-tmp');
+    assert.ok(typeof result === 'string');
+  });
+
+  it('should handle empty string', async () => {
+    const result = await watcherModule.resolveProjectPath('');
+    assert.strictEqual(result, '');
+  });
+
+  it('should handle single-segment path (falls to naive)', async () => {
+    const result = await watcherModule.resolveProjectPath('tmp');
+    assert.strictEqual(result, 'tmp');
+  });
+});
+
+// ============================================================================
+// isMainSessionFile
+// ============================================================================
+
+describe('isMainSessionFile', () => {
+  it('should accept regular .jsonl files', () => {
+    assert.strictEqual(watcherModule.isMainSessionFile('/path/session.jsonl', { isDirectory: () => false }), true);
+  });
+
+  it('should reject directories', () => {
+    assert.strictEqual(watcherModule.isMainSessionFile('/path/session.jsonl', { isDirectory: () => true }), false);
+  });
+
+  it('should reject non-.jsonl files', () => {
+    assert.strictEqual(watcherModule.isMainSessionFile('/path/session.txt', { isDirectory: () => false }), false);
+  });
+
+  it('should reject subagent files', () => {
+    assert.strictEqual(watcherModule.isMainSessionFile('/path/subagents/agent-xyz.jsonl', { isDirectory: () => false }), false);
+  });
+
+  it('should reject agent- prefixed files', () => {
+    assert.strictEqual(watcherModule.isMainSessionFile('/path/agent-xyz.jsonl', { isDirectory: () => false }), false);
+  });
+
+  it('should work without stats parameter', () => {
+    assert.strictEqual(watcherModule.isMainSessionFile('/path/session.jsonl', undefined), true);
+  });
+});
+
+// ============================================================================
+// readAgentType
+// ============================================================================
+
+describe('readAgentType', () => {
+  let tmpDir;
+
+  before(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-type-'));
+  });
+
+  after(() => {
+    try { fs.rmSync(tmpDir, { recursive: true }); } catch {}
+  });
+
+  it('should read agentType from meta file', async () => {
+    const jsonlPath = path.join(tmpDir, 'agent-abc.jsonl');
+    const metaPath = path.join(tmpDir, 'agent-abc.meta.json');
+    fs.writeFileSync(jsonlPath, '');
+    fs.writeFileSync(metaPath, JSON.stringify({ agentType: 'explore:Explorer' }));
+
+    const result = await watcherModule.readAgentType(jsonlPath);
+    assert.strictEqual(result, 'explore:Explorer');
+  });
+
+  it('should return empty string when meta file is missing', async () => {
+    const jsonlPath = path.join(tmpDir, 'agent-no-meta.jsonl');
+    fs.writeFileSync(jsonlPath, '');
+
+    const result = await watcherModule.readAgentType(jsonlPath);
+    assert.strictEqual(result, '');
+  });
+
+  it('should return empty string when meta has no agentType', async () => {
+    const jsonlPath = path.join(tmpDir, 'agent-empty-meta.jsonl');
+    const metaPath = path.join(tmpDir, 'agent-empty-meta.meta.json');
+    fs.writeFileSync(jsonlPath, '');
+    fs.writeFileSync(metaPath, JSON.stringify({ otherField: 'value' }));
+
+    const result = await watcherModule.readAgentType(jsonlPath);
+    assert.strictEqual(result, '');
+  });
+
+  it('should return empty string for invalid meta JSON', async () => {
+    const jsonlPath = path.join(tmpDir, 'agent-bad-meta.jsonl');
+    const metaPath = path.join(tmpDir, 'agent-bad-meta.meta.json');
+    fs.writeFileSync(jsonlPath, '');
+    fs.writeFileSync(metaPath, 'not json');
+
+    const result = await watcherModule.readAgentType(jsonlPath);
+    assert.strictEqual(result, '');
   });
 });

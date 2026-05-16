@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#7c3aed"/>
+      <stop offset="100%" stop-color="#4c1d95"/>
+    </linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="6" fill="url(#bg)"/>
+  <!-- Eye outline - wide almond, flatter top/bottom -->
+  <path d="M4 16 C6 11 10 9 16 9 C22 9 26 11 28 16 C26 21 22 23 16 23 C10 23 6 21 4 16Z" fill="#1f2937" stroke="#c084fc" stroke-width="2"/>
+  <!-- Iris - horizontal ellipse -->
+  <ellipse cx="16" cy="16" rx="6" ry="4.5" fill="#a855f7" stroke="#e9d5ff" stroke-width="1.5"/>
+  <!-- Pupil -->
+  <ellipse cx="16" cy="16" rx="2.5" ry="2" fill="#0f0a1a"/>
+  <!-- Shine -->
+  <circle cx="14" cy="14.5" r="1.2" fill="#f9fafb"/>
+</svg>

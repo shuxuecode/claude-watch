@@ -772,32 +772,42 @@ class Watcher extends EventEmitter {
           if (!line.includes('"tool_')) continue;
 
           if (line.includes('"tool_use"')) {
-            const idMatch = line.match(/"id"\s*:\s*"([^"]+)"/);
-            if (!idMatch) continue;
-            const tid = idMatch[1];
-            if (session.toolIndex.has(tid)) continue;
-            const nameMatch = line.match(/"name"\s*:\s*"([^"]+)"/);
-            session.toolIndex.set(tid, {
-              toolName: nameMatch ? nameMatch[1] : '',
-              parentAgentID: agentID,
-              hasResult: false,
-            });
+            try {
+              var raw = JSON.parse(line);
+              var content = raw.message && raw.message.content;
+              if (!Array.isArray(content)) continue;
+              for (var block of content) {
+                if (block.type !== 'tool_use' || !block.id) continue;
+                if (session.toolIndex.has(block.id)) continue;
+                session.toolIndex.set(block.id, {
+                  toolName: block.name || '',
+                  parentAgentID: agentID,
+                  hasResult: false,
+                });
+              }
+            } catch { continue; }
           }
 
           if (line.includes('"tool_result"')) {
-            const useIdMatch = line.match(/"tool_use_id"\s*:\s*"([^"]+)"/);
-            if (!useIdMatch) continue;
-            const tid = useIdMatch[1];
-            const existing = session.toolIndex.get(tid);
-            if (existing) {
-              existing.hasResult = true;
-            } else {
-              session.toolIndex.set(tid, {
-                toolName: '',
-                parentAgentID: '',
-                hasResult: true,
-              });
-            }
+            try {
+              var raw2 = JSON.parse(line);
+              var content2 = raw2.message && raw2.message.content;
+              if (!Array.isArray(content2)) continue;
+              for (var block2 of content2) {
+                if (block2.type !== 'tool_result' || !block2.tool_use_id) continue;
+                var tid = block2.tool_use_id;
+                var existing = session.toolIndex.get(tid);
+                if (existing) {
+                  existing.hasResult = true;
+                } else {
+                  session.toolIndex.set(tid, {
+                    toolName: '',
+                    parentAgentID: '',
+                    hasResult: true,
+                  });
+                }
+              }
+            } catch { continue; }
           }
         }
       } catch (err) {
@@ -971,7 +981,7 @@ class Watcher extends EventEmitter {
           const { bytesRead } = await handle.read(buf, 0, readLen, readFrom);
           if (bytesRead === 0) break;
 
-          const chunk = bytesRead < readLen ? buf.toString('utf-8', 0, bytesRead) : buf.toString('utf-8');
+          const chunk = buf.toString('utf-8', 0, bytesRead);
           const combined = carryOver + chunk;
 
           // Detect CRLF from first newline in the combined text
@@ -1217,7 +1227,7 @@ async function _listSessionsFiltered(limit, activeWithin) {
 
   const candidates = [];
   try {
-    await _walkDirStatic(claudeDir, (filePath, stats) => {
+    await _walkDirAsync(claudeDir, (filePath, stats) => {
       if (!isMainSessionFile(filePath, stats)) return;
       if (activeWithin > 0 && (now - stats.mtimeMs) > activeWithin) return;
       candidates.push({ filePath, stats });
@@ -1244,14 +1254,13 @@ async function _listSessionsFiltered(limit, activeWithin) {
   return sessions;
 }
 
-async function _walkDirStatic(dir, callback) {
-  return _walkDirAsync(dir, callback);
-}
-
 module.exports = {
   Watcher,
   Session,
   BackgroundTask,
   listSessions,
   listActiveSessions,
+  resolveProjectPath,
+  isMainSessionFile,
+  readAgentType,
 };

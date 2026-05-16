@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node bin/claude-watch.js",
     "dev": "node --watch bin/claude-watch.js --no-open",
-    "test": "node --test tests/all.test.js tests/watcher.test.js tests/server.test.js"
+    "test": "node --test tests/all.test.js tests/watcher.test.js tests/server.test.js tests/cli.test.js"
   },
   "files": [
     "bin",

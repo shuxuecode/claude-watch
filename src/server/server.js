@@ -93,10 +93,15 @@ class DashboardServer {
 
   broadcast(type, payload) {
     const msg = JSON.stringify({ type, payload });
+    const toRemove = [];
     for (const ws of this.clients) {
       if (ws.readyState === 1) {
-        try { ws.send(msg); } catch { this.clients.delete(ws); ws.terminate(); }
+        try { ws.send(msg); } catch { toRemove.push(ws); }
       }
+    }
+    for (const ws of toRemove) {
+      this.clients.delete(ws);
+      try { ws.terminate(); } catch {}
     }
   }
 
@@ -121,7 +126,7 @@ class DashboardServer {
   }
 
   async handleHTTP(req, res) {
-    const url = new URL(req.url, `http://${req.headers.host}`);
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const p = url.pathname;
 
     if (p === '/' || p === '/index.html') {
@@ -183,21 +188,25 @@ class DashboardServer {
       const filePath = params.get('path');
       if (!filePath) { this.sendJSON(res, { error: 'Missing path param' }, 400); return; }
       const resolved = path.resolve(filePath);
-      const allowedPrefix = path.resolve(os.homedir(), '.claude', 'projects');
-      // Resolve symlinks before prefix check to prevent symlink-based path traversal
+      // Resolve both the user-provided path AND the allowed prefix through realpath
+      // to ensure consistent comparison even if homedir contains symlinks
+      let realPath;
+      let allowedPrefix;
       try {
-        const realPath = await fs.promises.realpath(resolved);
+        const homeReal = await fs.promises.realpath(os.homedir());
+        allowedPrefix = path.join(homeReal, '.claude', 'projects');
+        realPath = await fs.promises.realpath(resolved);
         if (!realPath.startsWith(allowedPrefix)) {
           this.sendJSON(res, { error: 'Access denied' }, 403);
           return;
         }
       } catch {
-        // realpath fails for non-existent files — block them
+        // realpath fails for non-existent files or if homedir can't be resolved — block them
         this.sendJSON(res, { error: 'Access denied' }, 403);
         return;
       }
       try {
-        const content = await fs.promises.readFile(resolved, 'utf-8');
+        const content = await fs.promises.readFile(realPath, 'utf-8');
         this.sendJSON(res, { content });
       } catch (err) {
         this.sendJSON(res, { error: err.message }, 404);
@@ -239,11 +248,13 @@ class DashboardServer {
         this.broadcast('autoDiscoveryChanged', { enabled: this.watcher.isAutoDiscoveryEnabled() });
         break;
       case 'removeSession':
-        this.watcher.removeSession(cmd.sessionID);
-        this.broadcast('sessionRemoved', { sessionID: cmd.sessionID });
+        if (typeof cmd.sessionID === 'string' && cmd.sessionID) {
+          this.watcher.removeSession(cmd.sessionID);
+          this.broadcast('sessionRemoved', { sessionID: cmd.sessionID });
+        }
         break;
       case 'setSkipHistory':
-        this.watcher.setSkipHistory(cmd.skip);
+        this.watcher.setSkipHistory(cmd.skip === true);
         break;
       case 'getContext':
         this.sendContext(ws);
@@ -348,12 +359,14 @@ class DashboardServer {
       const confirmed = await askYesNo(`Port ${port} is occupied by process(es) ${pids.join(', ')}. Kill them? [y/N] `);
       if (!confirmed) {
         console.error(`Port ${port} is in use. Exiting.`);
+        this.stop();
         process.exit(1);
       }
 
+      const myPid = process.pid;
       for (const pid of pids) {
         const parsedPid = parseInt(pid, 10);
-        if (Number.isInteger(parsedPid) && parsedPid > 0) {
+        if (Number.isInteger(parsedPid) && parsedPid > 1 && parsedPid !== myPid) {
           try {
             if (process.platform === 'win32') {
               cp.execSync(`taskkill /PID ${parsedPid} /F`, { encoding: 'utf-8' });
@@ -369,7 +382,7 @@ class DashboardServer {
         await new Promise(r => setTimeout(r, 3000));
         for (const pid of pids) {
           const parsedPid = parseInt(pid, 10);
-          if (Number.isInteger(parsedPid) && parsedPid > 0) {
+          if (Number.isInteger(parsedPid) && parsedPid > 1 && parsedPid !== myPid) {
             try { process.kill(parsedPid, 0); process.kill(parsedPid, 'SIGKILL'); } catch {}
           }
         }
@@ -423,9 +436,11 @@ class DashboardServer {
     this.server.on('error', (err) => {
       if (err.code === 'EADDRINUSE') {
         console.error(`Port ${this.port} is still in use after attempting to free it. Exiting.`);
+        this.stop();
         process.exit(1);
       } else {
         console.error(`Server error: ${err.message}`);
+        this.stop();
         process.exit(1);
       }
     });
@@ -438,6 +453,7 @@ class DashboardServer {
       await w.start();
     } catch (err) {
       console.error('Watcher init error:', err.message);
+      this.stop();
       process.exit(1);
     }
 
@@ -490,6 +506,7 @@ async function startServer(options = {}) {
 }
 
 function askYesNo(prompt) {
+  if (!process.stdin.isTTY) return Promise.resolve(false);
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   return new Promise(resolve => {
     rl.question(prompt, answer => {

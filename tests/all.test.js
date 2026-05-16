@@ -2,7 +2,7 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert');
-const { parseLine, StreamItemType, contextWindowFor, setDebugAll } = require('../src/parser/parser');
+const { parseLine, StreamItemType, contextWindowFor, setDebugAll, formatToolInput, prettyToolName, agentDisplayName, formatTokenCount, MAX_TOOL_INPUT_LENGTH } = require('../src/parser/parser');
 
 // ============================================================================
 // Parser tests
@@ -143,5 +143,420 @@ describe('Parser', () => {
     });
     const items = parseLine(line);
     assert.strictEqual(items[0].content, 'mcp result');
+  });
+});
+
+// ============================================================================
+// Parser - custom-title
+// ============================================================================
+
+describe('Parser - custom-title', () => {
+  it('should parse custom-title message', () => {
+    const line = JSON.stringify({ type: 'custom-title', customTitle: 'my-custom-session', sessionId: 's1' });
+    const items = parseLine(line);
+    assert.strictEqual(items.length, 1);
+    assert.strictEqual(items[0].type, StreamItemType.SESSION_TITLE);
+    assert.strictEqual(items[0].content, 'my-custom-session');
+  });
+
+  it('should skip custom-title with empty title', () => {
+    const line = JSON.stringify({ type: 'custom-title', customTitle: '', sessionId: 's1' });
+    const items = parseLine(line);
+    assert.strictEqual(items.length, 0);
+  });
+});
+
+// ============================================================================
+// Parser - compact_boundary
+// ============================================================================
+
+describe('Parser - compact_boundary', () => {
+  it('should parse compact_boundary with metadata', () => {
+    const line = JSON.stringify({
+      type: 'system', subtype: 'compact_boundary',
+      timestamp: '2025-01-01T12:00:00Z', sessionId: 's1',
+      compactMetadata: { trigger: 'auto', preTokens: 150000 },
+    });
+    const items = parseLine(line);
+    assert.strictEqual(items.length, 1);
+    assert.strictEqual(items[0].type, StreamItemType.COMPACT_MARKER);
+    assert.strictEqual(items[0].content, 'auto, 150k pre-tokens');
+  });
+
+  it('should parse compact_boundary without metadata', () => {
+    const line = JSON.stringify({
+      type: 'system', subtype: 'compact_boundary',
+      timestamp: '2025-01-01T12:00:00Z', sessionId: 's1',
+    });
+    const items = parseLine(line);
+    assert.strictEqual(items.length, 1);
+    assert.strictEqual(items[0].type, StreamItemType.COMPACT_MARKER);
+    assert.strictEqual(items[0].content, '');
+  });
+});
+
+// ============================================================================
+// Parser - hook_success
+// ============================================================================
+
+describe('Parser - hook_success', () => {
+  it('should parse hook_success attachment', () => {
+    const line = JSON.stringify({
+      type: 'attachment', sessionId: 's1', agentId: '',
+      timestamp: '2025-01-01T12:00:00Z',
+      attachment: {
+        type: 'hook_success',
+        hookName: 'pre-commit',
+        stdout: 'hook output here',
+        durationMs: 120,
+      },
+    });
+    const items = parseLine(line);
+    assert.strictEqual(items.length, 1);
+    assert.strictEqual(items[0].type, StreamItemType.HOOK_OUTPUT);
+    assert.strictEqual(items[0].toolName, 'pre-commit');
+    assert.strictEqual(items[0].content, 'hook output here');
+    assert.strictEqual(items[0].durationMs, 120);
+  });
+
+  it('should skip non-hook_success attachment', () => {
+    const line = JSON.stringify({
+      type: 'attachment', sessionId: 's1',
+      attachment: { type: 'unknown_type', stdout: 'data' },
+    });
+    const items = parseLine(line);
+    assert.strictEqual(items.length, 0);
+  });
+});
+
+// ============================================================================
+// Parser - diagnostics
+// ============================================================================
+
+describe('Parser - diagnostics', () => {
+  it('should parse diagnostics attachment', () => {
+    const line = JSON.stringify({
+      type: 'attachment', sessionId: 's1', agentId: '',
+      timestamp: '2025-01-01T12:00:00Z',
+      attachment: {
+        type: 'diagnostics',
+        files: [{
+          uri: 'file:///src/app.ts',
+          diagnostics: [
+            { severity: 'error', message: 'Type mismatch', source: 'tsc' },
+            { severity: 'warning', message: 'Unused var', source: 'tsc' },
+          ],
+        }],
+      },
+    });
+    const items = parseLine(line);
+    assert.strictEqual(items.length, 1);
+    assert.strictEqual(items[0].type, StreamItemType.DIAGNOSTICS);
+    assert.ok(items[0].toolName.includes('app.ts'));
+    assert.ok(items[0].content.includes('[error] Type mismatch'));
+  });
+
+  it('should skip diagnostics with empty array', () => {
+    const line = JSON.stringify({
+      type: 'attachment', sessionId: 's1',
+      attachment: {
+        type: 'diagnostics',
+        files: [{ uri: 'file:///src/app.ts', diagnostics: [] }],
+      },
+    });
+    const items = parseLine(line);
+    assert.strictEqual(items.length, 0);
+  });
+});
+
+// ============================================================================
+// Parser - pr_link
+// ============================================================================
+
+describe('Parser - pr_link', () => {
+  it('should parse pr_link with full info', () => {
+    const line = JSON.stringify({
+      type: 'pr-link', sessionId: 's1',
+      prNumber: 42, prRepository: 'org/repo', prUrl: 'https://github.com/org/repo/pull/42',
+    });
+    const items = parseLine(line);
+    assert.strictEqual(items.length, 1);
+    assert.strictEqual(items[0].type, StreamItemType.PR_LINK);
+    assert.ok(items[0].content.includes('PR #42'));
+    assert.ok(items[0].content.includes('org/repo'));
+  });
+
+  it('should parse pr_link with only prUrl', () => {
+    const line = JSON.stringify({
+      type: 'pr-link', sessionId: 's1',
+      prNumber: 10, prUrl: 'https://github.com/org/repo/pull/10',
+    });
+    const items = parseLine(line);
+    assert.strictEqual(items.length, 1);
+    assert.ok(items[0].content.includes('PR #10'));
+  });
+
+  it('should parse pr_link with only prNumber', () => {
+    const line = JSON.stringify({
+      type: 'pr-link', sessionId: 's1',
+      prNumber: 99,
+    });
+    const items = parseLine(line);
+    assert.strictEqual(items.length, 1);
+    assert.ok(items[0].content.includes('PR #99'));
+  });
+
+  it('should skip pr_link without prNumber and prUrl', () => {
+    const line = JSON.stringify({ type: 'pr-link', sessionId: 's1' });
+    const items = parseLine(line);
+    assert.strictEqual(items.length, 0);
+  });
+});
+
+// ============================================================================
+// Parser - model extraction
+// ============================================================================
+
+describe('Parser - model extraction', () => {
+  it('should attach model to first item only', () => {
+    const line = JSON.stringify({
+      type: 'assistant', timestamp: '2025-01-01T12:00:00Z',
+      message: {
+        role: 'assistant', content: [
+          { type: 'text', text: 'first' },
+          { type: 'text', text: 'second' },
+        ],
+        model: 'claude-opus-4-7',
+      },
+    });
+    const items = parseLine(line);
+    assert.strictEqual(items[0].model, 'claude-opus-4-7');
+    assert.strictEqual(items[1].model, '');
+  });
+
+  it('should skip synthetic model', () => {
+    const line = JSON.stringify({
+      type: 'assistant', timestamp: '2025-01-01T12:00:00Z',
+      message: {
+        role: 'assistant', content: [{ type: 'text', text: 'hi' }],
+        model: '<synthetic>',
+      },
+    });
+    const items = parseLine(line);
+    assert.strictEqual(items[0].model, '');
+  });
+});
+
+// ============================================================================
+// formatToolInput
+// ============================================================================
+
+describe('formatToolInput', () => {
+  it('should format Bash with description', () => {
+    const result = formatToolInput('Bash', { command: 'ls -la', description: 'list files' });
+    assert.ok(result.includes('ls -la'));
+    assert.ok(result.includes('list files'));
+  });
+
+  it('should format Bash without description', () => {
+    assert.strictEqual(formatToolInput('Bash', { command: 'npm test' }), 'npm test');
+  });
+
+  it('should format Read', () => {
+    assert.strictEqual(formatToolInput('Read', { file_path: '/src/app.js' }), '/src/app.js');
+  });
+
+  it('should format Write', () => {
+    const result = formatToolInput('Write', { file_path: '/src/app.js', content: 'hello world' });
+    assert.ok(result.includes('/src/app.js'));
+    assert.ok(result.includes('bytes'));
+  });
+
+  it('should format Edit', () => {
+    assert.strictEqual(formatToolInput('Edit', { file_path: '/src/app.js' }), '/src/app.js');
+  });
+
+  it('should format Glob with path', () => {
+    assert.strictEqual(formatToolInput('Glob', { pattern: '**/*.js', path: '/src' }), '**/*.js in /src');
+  });
+
+  it('should format Glob without path', () => {
+    assert.strictEqual(formatToolInput('Glob', { pattern: '**/*.js' }), '**/*.js');
+  });
+
+  it('should format Grep with path', () => {
+    assert.strictEqual(formatToolInput('Grep', { pattern: 'TODO', path: '/src' }), '/TODO/ in /src');
+  });
+
+  it('should format Grep without path', () => {
+    assert.strictEqual(formatToolInput('Grep', { pattern: 'TODO' }), '/TODO/');
+  });
+
+  it('should format Grep with undefined pattern', () => {
+    assert.strictEqual(formatToolInput('Grep', { pattern: undefined }), '//');
+  });
+
+  it('should format WebFetch', () => {
+    assert.strictEqual(formatToolInput('WebFetch', { prompt: 'fetch this page' }), 'fetch this page');
+  });
+
+  it('should format WebSearch', () => {
+    assert.strictEqual(formatToolInput('WebSearch', { query: 'node.js tutorial' }), 'node.js tutorial');
+  });
+
+  it('should format Task/Agent with description', () => {
+    assert.strictEqual(formatToolInput('Task', { description: 'run tests' }), 'run tests');
+  });
+
+  it('should format Task/Agent with prompt fallback', () => {
+    assert.strictEqual(formatToolInput('Agent', { prompt: 'long prompt' }), 'long prompt');
+  });
+
+  it('should format Skill with args', () => {
+    const result = formatToolInput('Skill', { skill: 'review', args: 'PR #42' });
+    assert.ok(result.includes('review'));
+    assert.ok(result.includes('PR #42'));
+  });
+
+  it('should format Skill without args', () => {
+    assert.strictEqual(formatToolInput('Skill', { skill: 'review' }), 'review');
+  });
+
+  it('should format ToolSearch', () => {
+    assert.strictEqual(formatToolInput('ToolSearch', { query: 'read file' }), 'read file');
+  });
+
+  it('should format ScheduleWakeup with reason', () => {
+    assert.strictEqual(formatToolInput('ScheduleWakeup', { reason: 'check deploy' }), 'check deploy');
+  });
+
+  it('should format ScheduleWakeup with delaySeconds', () => {
+    assert.strictEqual(formatToolInput('ScheduleWakeup', { delaySeconds: 300 }), 'delay 300s');
+  });
+
+  it('should format TaskCreate', () => {
+    assert.strictEqual(formatToolInput('TaskCreate', { subject: 'fix bug' }), 'fix bug');
+  });
+
+  it('should format TaskUpdate with taskId', () => {
+    assert.strictEqual(formatToolInput('TaskUpdate', { taskId: 't1' }), 'task t1');
+  });
+
+  it('should format TaskStop', () => {
+    assert.strictEqual(formatToolInput('TaskStop', { task_id: 't1' }), 't1');
+  });
+
+  it('should format EnterPlanMode', () => {
+    assert.strictEqual(formatToolInput('EnterPlanMode', {}), '(enter plan mode)');
+  });
+
+  it('should format ExitPlanMode', () => {
+    assert.strictEqual(formatToolInput('ExitPlanMode', {}), '(exit plan mode)');
+  });
+
+  it('should format CronCreate with cron and prompt', () => {
+    const result = formatToolInput('CronCreate', { cron: '*/5 * * * *', prompt: 'check status' });
+    assert.ok(result.includes('*/5 * * * *'));
+    assert.ok(result.includes('check status'));
+  });
+
+  it('should truncate long inputs', () => {
+    const longCmd = 'a'.repeat(6000);
+    const result = formatToolInput('Bash', { command: longCmd });
+    assert.ok(result.endsWith('...truncated'));
+    assert.ok(result.length < longCmd.length);
+  });
+
+  it('should format unknown tools as JSON', () => {
+    const result = formatToolInput('CustomTool', { key: 'value' });
+    assert.ok(result.includes('"key"'));
+  });
+
+  it('should return empty string for null input', () => {
+    assert.strictEqual(formatToolInput('Bash', null), '');
+  });
+});
+
+// ============================================================================
+// MAX_TOOL_INPUT_LENGTH
+// ============================================================================
+
+describe('MAX_TOOL_INPUT_LENGTH', () => {
+  it('should be 5000', () => {
+    assert.strictEqual(MAX_TOOL_INPUT_LENGTH, 5000);
+  });
+});
+
+// ============================================================================
+// formatTokenCount
+// ============================================================================
+
+describe('formatTokenCount', () => {
+  it('should format zero', () => {
+    assert.strictEqual(formatTokenCount(0), '0');
+  });
+
+  it('should format small numbers', () => {
+    assert.strictEqual(formatTokenCount(999), '999');
+  });
+
+  it('should format thousands', () => {
+    assert.strictEqual(formatTokenCount(1000), '1k');
+    assert.strictEqual(formatTokenCount(15000), '15k');
+  });
+
+  it('should format millions', () => {
+    assert.strictEqual(formatTokenCount(1000000), '1.0M');
+    assert.strictEqual(formatTokenCount(2500000), '2.5M');
+  });
+});
+
+// ============================================================================
+// prettyToolName
+// ============================================================================
+
+describe('prettyToolName', () => {
+  it('should return non-MCP names unchanged', () => {
+    assert.strictEqual(prettyToolName('Bash'), 'Bash');
+    assert.strictEqual(prettyToolName('Read'), 'Read');
+  });
+
+  it('should simplify MCP tool names', () => {
+    assert.strictEqual(prettyToolName('mcp__myserver__mytool'), 'mcp:mytool');
+  });
+
+  it('should handle MCP names with long server prefix', () => {
+    assert.strictEqual(prettyToolName('mcp__github_api__create_pr'), 'mcp:create_pr');
+  });
+
+  it('should return original name for MCP prefix without tool name', () => {
+    assert.strictEqual(prettyToolName('mcp__'), 'mcp__');
+    assert.strictEqual(prettyToolName('mcp__x'), 'mcp__x');
+  });
+});
+
+// ============================================================================
+// agentDisplayName
+// ============================================================================
+
+describe('agentDisplayName', () => {
+  it('should return Main for empty agentID', () => {
+    assert.strictEqual(agentDisplayName(''), 'Main');
+  });
+
+  it('should return Main for undefined agentID', () => {
+    assert.strictEqual(agentDisplayName(undefined), 'Main');
+  });
+
+  it('should return Main for null agentID', () => {
+    assert.strictEqual(agentDisplayName(null), 'Main');
+  });
+
+  it('should truncate long agent IDs', () => {
+    assert.strictEqual(agentDisplayName('abc1234567890'), 'Agent-abc1234');
+  });
+
+  it('should handle short agent IDs', () => {
+    assert.strictEqual(agentDisplayName('abc'), 'Agent-abc');
   });
 });

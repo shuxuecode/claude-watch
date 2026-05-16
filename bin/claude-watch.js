@@ -7,6 +7,7 @@ const cp = require('child_process');
 
 const { startServer } = require('../src/server/server');
 const { listSessions, listActiveSessions } = require('../src/watcher/watcher');
+const { compareVersions, parseDuration } = require('../src/cli-helpers');
 
 const { version: VERSION } = require('../package.json');
 
@@ -41,14 +42,8 @@ ENVIRONMENT:
 `);
 }
 
-function compareVersions(a, b) {
-  const pa = a.split('.').map(Number);
-  const pb = b.split('.').map(Number);
-  for (let i = 0; i < 3; i++) {
-    if (pa[i] > pb[i]) return 1;
-    if (pa[i] < pb[i]) return -1;
-  }
-  return 0;
+function printVersion() {
+  console.log(`claude-watch v${VERSION}`);
 }
 
 function fetchLatestVersion() {
@@ -125,19 +120,6 @@ async function runUpdate() {
   } catch {
     console.error('\n  Update failed. Try manually: npm install -g claude-code-watch@latest');
     process.exit(1);
-  }
-}
-
-function parseDuration(s) {
-  const match = s.match(/^(\d+)(ms|s|m|h)$/);
-  if (!match) throw new Error(`Invalid duration: ${s}`);
-  const val = parseInt(match[1], 10);
-  switch (match[2]) {
-    case 'ms': return val;
-    case 's': return val * 1000;
-    case 'm': return val * 60 * 1000;
-    case 'h': return val * 3600 * 1000;
-    default: throw new Error(`Invalid duration unit: ${match[2]}`);
   }
 }
 

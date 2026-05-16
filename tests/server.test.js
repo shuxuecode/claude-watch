@@ -8,6 +8,7 @@ const path = require('path');
 const os = require('os');
 const { WebSocket } = require('ws');
 const { DashboardServer } = require('../src/server/server');
+const { Session } = require('../src/watcher/watcher');
 
 // ============================================================================
 // Helpers
@@ -381,5 +382,189 @@ describe('WebSocket integration', () => {
 
     assert.strictEqual(freshDs.clients.size, 0);
     freshDs.stop();
+  });
+});
+
+// ============================================================================
+// /api/task-output success path (Priority 3)
+// ============================================================================
+
+describe('/api/task-output success path', () => {
+  let ds;
+  let testDir;
+  let testFile;
+
+  before(async () => {
+    testDir = path.join(os.homedir(), '.claude', 'projects', '__test_task_output__');
+    testFile = path.join(testDir, 'result.txt');
+    fs.mkdirSync(testDir, { recursive: true });
+    fs.writeFileSync(testFile, 'test output content');
+
+    ds = createServer();
+    await startBareServer(ds);
+  });
+
+  after(() => {
+    ds.stop();
+    try { fs.rmSync(testDir, { recursive: true }); } catch {}
+  });
+
+  it('should return file content for valid path within allowed directory', async () => {
+    const res = await makeRequest(ds, `/api/task-output?path=${encodeURIComponent(testFile)}`);
+    assert.strictEqual(res.statusCode, 200);
+    const data = JSON.parse(res.body);
+    assert.strictEqual(data.content, 'test output content');
+  });
+});
+
+// ============================================================================
+// cleanupContextMap (Priority 5)
+// ============================================================================
+
+describe('cleanupContextMap', () => {
+  it('should remove stale context entries', () => {
+    const ds = createServer();
+    ds.contextMap.set('s1:', { inputTokens: 100, outputTokens: 0, cacheCreation: 0, cacheRead: 0, model: '', contextWindow: 200000, lastActivity: Date.now() });
+    ds.contextMap.set('s2:', { inputTokens: 200, outputTokens: 0, cacheCreation: 0, cacheRead: 0, model: '', contextWindow: 200000, lastActivity: Date.now() - 61 * 60 * 1000 });
+
+    ds.cleanupContextMap();
+
+    assert.ok(ds.contextMap.has('s1:'));
+    assert.ok(!ds.contextMap.has('s2:'));
+  });
+
+  it('should keep entries within stale threshold', () => {
+    const ds = createServer();
+    ds.contextMap.set('s3:', { inputTokens: 50, outputTokens: 0, cacheCreation: 0, cacheRead: 0, model: '', contextWindow: 200000, lastActivity: Date.now() - 30 * 60 * 1000 });
+
+    ds.cleanupContextMap();
+
+    assert.ok(ds.contextMap.has('s3:'));
+  });
+
+  it('should remove all entries when all are stale', () => {
+    const ds = createServer();
+    ds.contextMap.set('old1:', { inputTokens: 1, outputTokens: 0, cacheCreation: 0, cacheRead: 0, model: '', contextWindow: 200000, lastActivity: Date.now() - 120 * 60 * 1000 });
+    ds.contextMap.set('old2:', { inputTokens: 2, outputTokens: 0, cacheCreation: 0, cacheRead: 0, model: '', contextWindow: 200000, lastActivity: Date.now() - 90 * 60 * 1000 });
+
+    ds.cleanupContextMap();
+
+    assert.strictEqual(ds.contextMap.size, 0);
+  });
+});
+
+// ============================================================================
+// WS handleCommand (Priority 6)
+// ============================================================================
+
+describe('WS handleCommand', () => {
+  let ds;
+
+  before(async () => {
+    ds = createServer();
+    ds.setupWatcher({});
+    await startBareServer(ds);
+  });
+
+  after(() => {
+    ds.stop();
+  });
+
+  it('should toggle auto discovery via command', async () => {
+    const ws = new WebSocket(`ws://127.0.0.1:${ds.port}`);
+
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { ws.close(); reject(new Error('timeout')); }, 3000);
+      ws.on('open', () => { clearTimeout(timer); resolve(); });
+      ws.on('error', () => { clearTimeout(timer); ws.close(); resolve(); });
+    });
+
+    await new Promise(r => setTimeout(r, 100));
+
+    const messages = [];
+    ws.on('message', (data) => { messages.push(JSON.parse(data.toString())); });
+
+    ws.send(JSON.stringify({ action: 'toggleAutoDiscovery' }));
+    await new Promise(r => setTimeout(r, 200));
+
+    const autoDiscoMsg = messages.find(m => m.type === 'autoDiscoveryChanged');
+    assert.ok(autoDiscoMsg);
+    assert.strictEqual(autoDiscoMsg.payload.enabled, false);
+
+    ws.close();
+  });
+
+  it('should remove session via command', async () => {
+    const session = new Session('test-rm', '/proj', '/file.jsonl');
+    ds.watcher.sessions.set('test-rm', session);
+
+    const ws = new WebSocket(`ws://127.0.0.1:${ds.port}`);
+
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { ws.close(); reject(new Error('timeout')); }, 3000);
+      ws.on('open', () => { clearTimeout(timer); resolve(); });
+      ws.on('error', () => { clearTimeout(timer); ws.close(); resolve(); });
+    });
+
+    await new Promise(r => setTimeout(r, 100));
+
+    const messages = [];
+    ws.on('message', (data) => { messages.push(JSON.parse(data.toString())); });
+
+    ws.send(JSON.stringify({ action: 'removeSession', sessionID: 'test-rm' }));
+    await new Promise(r => setTimeout(r, 200));
+
+    assert.ok(!ds.watcher.sessions.has('test-rm'));
+    const rmMsg = messages.find(m => m.type === 'sessionRemoved');
+    assert.ok(rmMsg);
+    assert.strictEqual(rmMsg.payload.sessionID, 'test-rm');
+
+    ws.close();
+  });
+
+  it('should set skip history via command', async () => {
+    const ws = new WebSocket(`ws://127.0.0.1:${ds.port}`);
+
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { ws.close(); reject(new Error('timeout')); }, 3000);
+      ws.on('open', () => { clearTimeout(timer); resolve(); });
+      ws.on('error', () => { clearTimeout(timer); ws.close(); resolve(); });
+    });
+
+    ws.send(JSON.stringify({ action: 'setSkipHistory', skip: true }));
+    await new Promise(r => setTimeout(r, 100));
+
+    assert.strictEqual(ds.watcher.skipHistory, true);
+
+    ws.close();
+  });
+
+  it('should send context via getContext command', async () => {
+    ds.updateContext({ sessionID: 'ctx-s1', agentID: '', inputTokens: 99, outputTokens: 0 });
+
+    const ws = new WebSocket(`ws://127.0.0.1:${ds.port}`);
+    const messages = [];
+
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(reject, 3000);
+      ws.on('message', (data) => {
+        const msg = JSON.parse(data.toString());
+        messages.push(msg);
+        // Wait for initial 3 msgs + 1 getContext response
+        if (messages.length >= 4) { clearTimeout(timer); resolve(); }
+      });
+      ws.on('open', () => {
+        setTimeout(() => { ws.send(JSON.stringify({ action: 'getContext' })); }, 100);
+      });
+      ws.on('error', () => { clearTimeout(timer); ws.close(); resolve(); });
+      ws.on('close', () => { clearTimeout(timer); resolve(); });
+    });
+
+    const ctxMsgs = messages.filter(m => m.type === 'context');
+    const lastCtx = ctxMsgs[ctxMsgs.length - 1];
+    assert.ok(lastCtx);
+    assert.strictEqual(lastCtx.payload['ctx-s1:'].inputTokens, 99);
+
+    ws.close();
   });
 });
