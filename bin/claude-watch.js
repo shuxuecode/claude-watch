@@ -113,9 +113,8 @@ async function runUpdate() {
   console.log(`  Latest version: v${latest}`);
   console.log('  Running npm install -g claude-code-watch@latest...\n');
 
-  const { execSync } = require('child_process');
   try {
-    execSync('npm install -g claude-code-watch@latest', { stdio: 'inherit' });
+    cp.execSync('npm install -g claude-code-watch@latest', { stdio: 'inherit' });
     console.log(`\n  Updated to v${latest}. Restart to use the new version.`);
   } catch {
     console.error('\n  Update failed. Try manually: npm install -g claude-code-watch@latest');
@@ -139,9 +138,16 @@ async function main() {
     openBrowser: true,
   };
 
-  // First pass: collect all option values
+  // Action flags
+  let listSessionsLimit = 0;   // 0 = no list, >0 = limit
+  let listActiveLimit = 0;     // 0 = no list, >0 = limit, -1 = all
+  let showVersion = false;
+  let showHelp = false;
+  let doUpdate = false;
+
   for (let i = 0; i < args.length; i++) {
-    switch (args[i]) {
+    const arg = args[i];
+    switch (arg) {
       case '-s':
         options.sessionID = args[++i] || '';
         break;
@@ -151,7 +157,7 @@ async function main() {
       case '-p':
       case '--port': {
         if (i + 1 >= args.length || args[i + 1].startsWith('-')) {
-          console.error(`Error: ${args[i]} requires a port number`);
+          console.error(`Error: ${arg} requires a port number`);
           process.exit(1);
         }
         const pv = parseInt(args[++i], 10);
@@ -165,7 +171,7 @@ async function main() {
       case '-h':
       case '--host':
         if (i + 1 >= args.length || args[i + 1].startsWith('-')) {
-          console.error(`Error: ${args[i]} requires a host address`);
+          console.error(`Error: ${arg} requires a host address`);
           process.exit(1);
         }
         options.host = args[++i];
@@ -196,73 +202,83 @@ async function main() {
       case '--no-open':
         options.openBrowser = false;
         break;
-      default:
-        break;
-    }
-  }
-
-  // Second pass: execute action flags with fully resolved options
-  for (let i = 0; i < args.length; i++) {
-    switch (args[i]) {
       case '-l': {
-        const v = parseInt(args[i + 1]);
-        const limit = !isNaN(v) ? v : 10;
+        const next = args[i + 1];
+        const v = parseInt(next);
+        listSessionsLimit = !isNaN(v) ? v : 10;
         if (!isNaN(v)) i++;
-        const sessions = await listSessions(limit);
-        if (sessions.length === 0) {
-          console.log('No sessions found.');
-        } else {
-          const now = Date.now();
-          for (const s of sessions) {
-            const age = Math.round((now - new Date(s.modified).getTime()) / 1000);
-            const ageStr = age < 60 ? `${age}s ago` : age < 3600 ? `${Math.floor(age / 60)}m ago` : `${Math.floor(age / 3600)}h ago`;
-            const active = s.isActive ? '●' : '○';
-            const id = s.id.length > 40 ? s.id.slice(0, 37) + '...' : s.id;
-            console.log(`${active} ${id}  ${s.projectPath || '?'}  ${ageStr}`);
-          }
-        }
-        return;
+        break;
       }
       case '-a': {
-        const v = parseInt(args[i + 1]);
-        const limit = !isNaN(v) ? v : 0;
-        if (!isNaN(v)) i++;
-        const sessions = await listActiveSessions(options.activeWindow);
-        const result = limit > 0 ? sessions.slice(0, limit) : sessions;
-        if (result.length === 0) {
-          console.log('No active sessions found.');
-        } else {
-          const now = Date.now();
-          for (const s of result) {
-            const age = Math.round((now - new Date(s.modified).getTime()) / 1000);
-            const ageStr = age < 60 ? `${age}s ago` : age < 3600 ? `${Math.floor(age / 60)}m ago` : `${Math.floor(age / 3600)}h ago`;
-            const id = s.id.length > 40 ? s.id.slice(0, 37) + '...' : s.id;
-            console.log(`● ${id}  ${s.projectPath || '?'}  ${ageStr}`);
-          }
-        }
-        return;
+        const next = args[i + 1];
+        const v = parseInt(next);
+        if (!isNaN(v)) { listActiveLimit = v; i++; }
+        else { listActiveLimit = -1; }
+        break;
       }
       case '-v':
-        console.log(`claude-watch v${VERSION}`);
-        return;
+        showVersion = true;
+        break;
       case '--help':
-        printHelp();
-        return;
+        showHelp = true;
+        break;
       case 'update':
-        await runUpdate();
-        return;
-      // Skip option flags already handled in first pass
-      case '-s': case '-n': case '-p': case '--port':
-      case '-h': case '--host': case '-w': case '-c':
-      case '-m': case '-D': case '--poll': case '--no-open':
+        doUpdate = true;
         break;
       default:
-        if (args[i].startsWith('-')) {
-          console.error(`Unknown option: ${args[i]}`);
+        if (arg.startsWith('-')) {
+          console.error(`Unknown option: ${arg}`);
           printHelp();
           process.exit(1);
         }
     }
+  }
+
+  // Execute action flags
+  if (showVersion) {
+    printVersion();
+    return;
+  }
+  if (showHelp) {
+    printHelp();
+    return;
+  }
+  if (doUpdate) {
+    await runUpdate();
+    return;
+  }
+  if (listSessionsLimit > 0) {
+    const sessions = await listSessions(listSessionsLimit);
+    if (sessions.length === 0) {
+      console.log('No sessions found.');
+    } else {
+      const now = Date.now();
+      for (const s of sessions) {
+        const age = Math.round((now - new Date(s.modified).getTime()) / 1000);
+        const ageStr = age < 60 ? `${age}s ago` : age < 3600 ? `${Math.floor(age / 60)}m ago` : `${Math.floor(age / 3600)}h ago`;
+        const active = s.isActive ? '●' : '○';
+        const id = s.id.length > 40 ? s.id.slice(0, 37) + '...' : s.id;
+        console.log(`${active} ${id}  ${s.projectPath || '?'}  ${ageStr}`);
+      }
+    }
+    return;
+  }
+  if (listActiveLimit !== 0) {
+    const limit = listActiveLimit > 0 ? listActiveLimit : 0;
+    const sessions = await listActiveSessions(options.activeWindow);
+    const result = limit > 0 ? sessions.slice(0, limit) : sessions;
+    if (result.length === 0) {
+      console.log('No active sessions found.');
+    } else {
+      const now = Date.now();
+      for (const s of result) {
+        const age = Math.round((now - new Date(s.modified).getTime()) / 1000);
+        const ageStr = age < 60 ? `${age}s ago` : age < 3600 ? `${Math.floor(age / 60)}m ago` : `${Math.floor(age / 3600)}h ago`;
+        const id = s.id.length > 40 ? s.id.slice(0, 37) + '...' : s.id;
+        console.log(`● ${id}  ${s.projectPath || '?'}  ${ageStr}`);
+      }
+    }
+    return;
   }
 
   checkForUpdate();

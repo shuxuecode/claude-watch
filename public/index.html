@@ -393,16 +393,19 @@ let needsFullRender = true;
 // ══════════════════════════════════════════════════════════════════════════════
 
 const mdRenderer = new marked.Renderer();
-mdRenderer.code = function (code, lang) {
+mdRenderer.code = function (codeOrObj, langOrEsc) {
+  // marked v4: code(text, lang, escaped) — marked v5+: code({ text, lang })
+  const text = typeof codeOrObj === 'object' ? codeOrObj.text : codeOrObj;
+  const lang = typeof codeOrObj === 'object' ? codeOrObj.lang : langOrEsc;
   let highlighted;
   if (lang && hljs.getLanguage(lang)) {
     try {
-      highlighted = hljs.highlight(code, { language: lang }).value;
+      highlighted = hljs.highlight(text, { language: lang }).value;
     } catch {
-      highlighted = hljs.highlightAuto(code).value;
+      highlighted = hljs.highlightAuto(text).value;
     }
   } else {
-    highlighted = hljs.highlightAuto(code).value;
+    highlighted = hljs.highlightAuto(text).value;
   }
   const langTag = lang ? `<span class="lang-tag">${esc(lang)}</span>` : '';
   return `<div class="code-block-wrapper">

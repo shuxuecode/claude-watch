@@ -424,15 +424,21 @@ class Watcher extends EventEmitter {
 
     if (p.endsWith('.jsonl')) {
       if (p.includes('/subagents/')) {
-        this._handleNewSubagentFile(p);
+        this._handleNewSubagentFile(p).catch(err => {
+        if (this.debug) console.error('[watcher] _handleNewSubagentFile error:', err.message);
+      });
       } else if (this.watchActive) {
-        this._handleNewSessionFile(p); // fire-and-forget, session will be discovered on next poll
+        this._handleNewSessionFile(p).catch(err => {
+          if (this.debug) console.error('[watcher] _handleNewSessionFile error:', err.message);
+        });
       }
       return;
     }
 
     if (p.endsWith('.txt') && p.includes('/tool-results/')) {
-      this._handleNewToolResultFile(p);
+      this._handleNewToolResultFile(p).catch(err => {
+        if (this.debug) console.error('[watcher] _handleNewToolResultFile error:', err.message);
+      });
     }
   }
 
@@ -448,9 +454,13 @@ class Watcher extends EventEmitter {
         continue;
       }
       if (base === 'subagents' && entry.name.endsWith('.jsonl')) {
-        this._handleNewSubagentFile(fullPath);
+        this._handleNewSubagentFile(fullPath).catch(err => {
+          if (this.debug) console.error('[watcher] _handleNewSubagentFile error:', err.message);
+        });
       } else if (base === 'tool-results' && entry.name.endsWith('.txt')) {
-        this._handleNewToolResultFile(fullPath);
+        this._handleNewToolResultFile(fullPath).catch(err => {
+          if (this.debug) console.error('[watcher] _handleNewToolResultFile error:', err.message);
+        });
       }
     }
   }
@@ -542,7 +552,9 @@ class Watcher extends EventEmitter {
       this.pendingSubagents.delete(session.id);
       for (const sp of pending) {
         const agentID = path.basename(sp).replace(/^agent-/, '').replace(/\.jsonl$/, '');
-        this._registerSubagent(session, session.id, agentID, sp);
+        this._registerSubagent(session, session.id, agentID, sp).catch(err => {
+          if (this.debug) console.error('[watcher] _registerSubagent error (pending):', err.message);
+        });
       }
     }
   }
@@ -561,7 +573,9 @@ class Watcher extends EventEmitter {
       return;
     }
 
-    this._registerSubagent(session, sessionID, agentID, p); // fire-and-forget, event handler context
+    this._registerSubagent(session, sessionID, agentID, p).catch(err => {
+      if (this.debug) console.error('[watcher] _registerSubagent error:', err.message);
+    });
   }
 
   async _registerSubagent(session, sessionID, agentID, p) {

@@ -55,6 +55,8 @@ class DashboardServer {
       ctx = { inputTokens: 0, outputTokens: 0, cacheCreation: 0, cacheRead: 0, model: '', contextWindow: 200000, lastActivity: Date.now() };
       this.contextMap.set(key, ctx);
     }
+    // inputTokens: Claude API returns cumulative total per call, not incremental — use Math.max
+    // outputTokens/cache tokens: API returns incremental values — use +=
     if (item.inputTokens) ctx.inputTokens = Math.max(ctx.inputTokens, item.inputTokens);
     if (item.outputTokens) ctx.outputTokens += item.outputTokens;
     if (item.cacheCreationTokens) ctx.cacheCreation += item.cacheCreationTokens;
@@ -101,7 +103,9 @@ class DashboardServer {
     }
     for (const ws of toRemove) {
       this.clients.delete(ws);
-      try { ws.terminate(); } catch {}
+      try { ws.terminate(); } catch (err) {
+        if (this.debugAll) console.error('[server] terminate error:', err.message);
+      }
     }
   }
 
@@ -224,7 +228,9 @@ class DashboardServer {
       try {
         const cmd = JSON.parse(data.toString('utf-8'));
         this.handleCommand(ws, cmd);
-      } catch {}
+      } catch (err) {
+        if (this.debugAll) console.error('[server] WS message error:', err.message);
+      }
     });
 
     ws.on('close', () => {
@@ -373,7 +379,9 @@ class DashboardServer {
             } else {
               process.kill(parsedPid, 'SIGTERM');
             }
-          } catch {}
+          } catch (err) {
+            console.error(`[server] Failed to SIGTERM pid ${parsedPid}: ${err.message}`);
+          }
         }
       }
 
@@ -383,7 +391,9 @@ class DashboardServer {
         for (const pid of pids) {
           const parsedPid = parseInt(pid, 10);
           if (Number.isInteger(parsedPid) && parsedPid > 1 && parsedPid !== myPid) {
-            try { process.kill(parsedPid, 0); process.kill(parsedPid, 'SIGKILL'); } catch {}
+            try { process.kill(parsedPid, 0); process.kill(parsedPid, 'SIGKILL'); } catch {
+              // Process already gone — nothing to do
+            }
           }
         }
       }
