@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-05-20 (v0.0.13)
+
+- Feature: 右侧数据展示区每条请求标签行（Main » 📤 Bash result 等）右侧新增时间戳显示，格式为 YYYY-MM-DD HH:MM:SS.mmm，使用数据模型中已有的 timestamp 字段
+
 ## 2026-05-16 (v0.0.10)
 
 - Feature: 新增 favicon.svg

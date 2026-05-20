@@ -194,9 +194,11 @@ body {
 .stream-line.diag { color: var(--red); }
 .stream-line.debug { color: var(--gray); }
 .stream-line.marker { color: var(--dim); }
-.stream-line.agent-tag { font-weight: bold; }
+.stream-line.agent-tag { font-weight: bold; display: flex; justify-content: space-between; align-items: baseline; white-space: nowrap; }
 .stream-line.agent-main { color: var(--blue); }
 .stream-line.agent-sub { color: var(--magenta); }
+.stream-line.agent-tag .tag-label { flex-shrink: 0; }
+.stream-line.agent-tag .timestamp { font-weight: normal; font-size: 0.85em; color: var(--dim); white-space: nowrap; }
 .stream-line.separator { color: var(--dim); }
 
 /* ── Footer ── */
@@ -894,14 +896,15 @@ function renderItem(item) {
   }
 
   const agentName = item.agentName || 'Main';
+  const tsHtml = item.timestamp ? `<span class="timestamp">${fmtTimestamp(item.timestamp)}</span>` : '';
 
   switch (item.type) {
     case 'thinking':
-      lines.push({ cls: agentTagCls, text: agentName + sep + '🧠 Thinking' });
+      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${esc(agentName + sep + '🧠 Thinking')}</span>${tsHtml}`, html: true });
       for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line thinking', text: l });
       break;
     case 'tool_input':
-      lines.push({ cls: agentTagCls, text: agentName + sep + `🔧 ${item.toolName || ''}` });
+      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${esc(agentName + sep + `🔧 ${item.toolName || ''}`)}</span>${tsHtml}`, html: true });
       for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line tool-input', text: l });
       break;
     case 'tool_output': {
@@ -911,33 +914,33 @@ function renderItem(item) {
       }
       let label = tn ? `📤 ${tn} result` : '📤 Output';
       if (item.durationMs > 0) label += ' ' + fmtDur(item.durationMs);
-      lines.push({ cls: agentTagCls, text: agentName + sep + label });
+      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${esc(agentName + sep + label)}</span>${tsHtml}`, html: true });
       for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line tool-output', text: l });
       break;
     }
     case 'text':
-      lines.push({ cls: agentTagCls, text: agentName + sep + '💬 Response' });
+      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${esc(agentName + sep + '💬 Response')}</span>${tsHtml}`, html: true });
       lines.push({ cls: 'stream-line text md-content', text: mdRender(item.content), html: true });
       break;
     case 'hook_output': {
       let label = '🪝 Hook';
       if (item.toolName) label += ' ' + item.toolName;
       if (item.durationMs > 0) label += ' ' + fmtDur(item.durationMs);
-      lines.push({ cls: agentTagCls, text: agentName + sep + label });
+      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${esc(agentName + sep + label)}</span>${tsHtml}`, html: true });
       for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line hook', text: l });
       break;
     }
     case 'diagnostics': {
       let label = '⚠ Diagnostics';
       if (item.toolName) label += ' ' + item.toolName;
-      lines.push({ cls: agentTagCls, text: agentName + sep + label });
+      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${esc(agentName + sep + label)}</span>${tsHtml}`, html: true });
       for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line diag', text: l });
       break;
     }
     case 'debug': {
       let label = '🔍 Debug';
       if (item.toolName) label += ' ' + item.toolName;
-      lines.push({ cls: agentTagCls, text: agentName + sep + label });
+      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${esc(agentName + sep + label)}</span>${tsHtml}`, html: true });
       for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line debug', text: l });
       break;
     }
@@ -1270,6 +1273,15 @@ function fmtDur(ms) {
   if (ms < 1000) return `(${ms}ms)`;
   if (ms < 60000) return `(${(ms / 1000).toFixed(1)}s)`;
   return `(${(ms / 60000).toFixed(1)}m)`;
+}
+
+function fmtTimestamp(ts) {
+  if (!ts) return '';
+  const d = ts instanceof Date ? ts : new Date(ts);
+  if (isNaN(d.getTime())) return '';
+  const pad = (n, len) => String(n).padStart(len, '0');
+  const ms = pad(d.getMilliseconds(), 3);
+  return `${pad(d.getFullYear(),4)}-${pad(d.getMonth()+1,2)}-${pad(d.getDate(),2)} ${pad(d.getHours(),2)}:${pad(d.getMinutes(),2)}:${pad(d.getSeconds(),2)}.${ms}`;
 }
 
 function fmtTok(n) {
