@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-05-23 (v0.0.15)
+
+- Feature: 左侧树节点新增任务描述显示 — Main 代理显示用户输入的 Prompt，子代理显示当前执行的 `{toolName}: {content}`（如 `Bash: npm test`），task 节点显示任务描述，CSS `text-overflow: ellipsis` 自动截断
+- Feature: 左侧树工具栏新增 💬 按钮，可切换 agent/task 任务描述行的显示/隐藏
+- Feature: parser 新增 `USER_TEXT` 类型，提取用户消息中的文本 Prompt，用于 Main 代理节点显示
+- Change: Main 代理节点只显示用户 Prompt，不显示过程中的工具调用描述；子代理节点继续显示工具调用描述
+- Change: `USER_TEXT` 条目不在右侧流面板中显示（`isItemVisible` 返回 false）
+- Change: 左侧树节点 HTML 结构从 `<tree-node>` 单层改为 `<tree-content>` 包裹 `<tree-node>` + `<tree-activity>` 的双层容器，支持名称行+描述行布局
+- Change: hover/selected/dim 样式从 `.tree-node` 移至 `.tree-content`，确保整行（名称+描述）视觉一致
+- Change: `.tree-row` 从 `align-items: center` 改为 `flex-start`，适配多行内容
+
 ## 2026-05-20 (v0.0.13)
 
 - Feature: 右侧数据展示区每条请求标签行（Main » 📤 Bash result 等）右侧新增时间戳显示，格式为 YYYY-MM-DD HH:MM:SS.mmm，使用数据模型中已有的 timestamp 字段

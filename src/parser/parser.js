@@ -9,6 +9,7 @@ var StreamItemType = {
   TOOL_INPUT: 'tool_input',
   TOOL_OUTPUT: 'tool_output',
   TEXT: 'text',
+  USER_TEXT: 'user_text',
   TURN_MARKER: 'turn_marker',
   COMPACT_MARKER: 'compact_marker',
   HOOK_OUTPUT: 'hook_output',
@@ -368,7 +369,7 @@ function parseAssistantMessage(raw, timestamp) {
 
 function parseUserMessage(raw, timestamp) {
   const msg = raw.message;
-  if (!msg || !Array.isArray(msg.content)) return [];
+  if (!msg) return [];
 
   // Parse toolUseResult for duration
   let durationMs = 0;
@@ -379,17 +380,51 @@ function parseUserMessage(raw, timestamp) {
   const items = [];
   const name = agentDisplayName(raw.agentId);
 
-  for (const result of msg.content) {
-    if (result.type === 'tool_result') {
+  // String content — user prompt
+  if (typeof msg.content === 'string' && msg.content) {
+    const text = stripNonUserContent(msg.content);
+    if (text) {
       items.push(makeItem({
-        type: StreamItemType.TOOL_OUTPUT,
+        type: StreamItemType.USER_TEXT,
         agentID: raw.agentId || '',
         agentName: name,
-        content: extractToolResultContent(result.content),
-        toolID: result.tool_use_id || '',
-        durationMs,
+        content: text,
         timestamp,
       }));
+    }
+  }
+
+  // Array content — mixed text blocks and tool_result blocks
+  if (Array.isArray(msg.content)) {
+    const textParts = [];
+    for (const block of msg.content) {
+      if (block.type === 'text' && block.text) {
+        const text = stripNonUserContent(block.text);
+        if (text) textParts.push(text);
+      }
+    }
+    if (textParts.length > 0) {
+      items.push(makeItem({
+        type: StreamItemType.USER_TEXT,
+        agentID: raw.agentId || '',
+        agentName: name,
+        content: textParts.join('\n'),
+        timestamp,
+      }));
+    }
+
+    for (const result of msg.content) {
+      if (result.type === 'tool_result') {
+        items.push(makeItem({
+          type: StreamItemType.TOOL_OUTPUT,
+          agentID: raw.agentId || '',
+          agentName: name,
+          content: extractToolResultContent(result.content),
+          toolID: result.tool_use_id || '',
+          durationMs,
+          timestamp,
+        }));
+      }
     }
   }
 
@@ -411,6 +446,19 @@ function extractToolResultContent(content) {
   } catch {
     return String(content);
   }
+}
+
+function stripNonUserContent(text) {
+  if (!text) return '';
+  // Remove tags that wrap non-user content
+  let s = text;
+  s = s.replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/g, '');
+  s = s.replace(/<command-name>[\s\S]*?<\/command-name>/g, '');
+  s = s.replace(/<command-message>[\s\S]*?<\/command-message>/g, '');
+  s = s.replace(/<command-args>[\s\S]*?<\/command-args>/g, '');
+  s = s.replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/g, '');
+  // Trim and return; empty string means no real user content
+  return s.trim();
 }
 
 // ============================================================================
@@ -497,5 +545,6 @@ module.exports = {
   formatToolInput,
   prettyToolName,
   agentDisplayName,
+  stripNonUserContent,
   MAX_TOOL_INPUT_LENGTH,
 };

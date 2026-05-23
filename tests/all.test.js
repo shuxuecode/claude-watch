@@ -2,7 +2,7 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert');
-const { parseLine, StreamItemType, contextWindowFor, setDebugAll, formatToolInput, prettyToolName, agentDisplayName, formatTokenCount, MAX_TOOL_INPUT_LENGTH } = require('../src/parser/parser');
+const { parseLine, StreamItemType, contextWindowFor, setDebugAll, formatToolInput, prettyToolName, agentDisplayName, formatTokenCount, stripNonUserContent, MAX_TOOL_INPUT_LENGTH } = require('../src/parser/parser');
 
 // ============================================================================
 // Parser tests
@@ -54,6 +54,83 @@ describe('Parser', () => {
     assert.strictEqual(items.length, 1);
     assert.strictEqual(items[0].type, StreamItemType.TOOL_OUTPUT);
     assert.strictEqual(items[0].toolID, 'toolu_abc');
+  });
+
+  it('should parse user text (prompt) as USER_TEXT', () => {
+    const line = JSON.stringify({
+      type: 'user',
+      timestamp: '2025-01-01T12:00:00Z',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: '请帮我修复这个bug' }],
+      },
+    });
+    const items = parseLine(line);
+    assert.strictEqual(items.length, 1);
+    assert.strictEqual(items[0].type, StreamItemType.USER_TEXT);
+    assert.strictEqual(items[0].content, '请帮我修复这个bug');
+  });
+
+  it('should parse string content user message as USER_TEXT', () => {
+    const line = JSON.stringify({
+      type: 'user',
+      timestamp: '2025-01-01T12:00:00Z',
+      message: {
+        role: 'user',
+        content: '扫描这个项目，左侧树展示的数据是什么数据',
+      },
+    });
+    const items = parseLine(line);
+    assert.strictEqual(items.length, 1);
+    assert.strictEqual(items[0].type, StreamItemType.USER_TEXT);
+    assert.strictEqual(items[0].content, '扫描这个项目，左侧树展示的数据是什么数据');
+  });
+
+  it('should strip non-user tags from string content', () => {
+    const line = JSON.stringify({
+      type: 'user',
+      timestamp: '2025-01-01T12:00:00Z',
+      message: {
+        role: 'user',
+        content: '<local-command-stdout>Set model to glm-5.1</local-command-stdout>',
+      },
+    });
+    const items = parseLine(line);
+    assert.strictEqual(items.length, 0);
+  });
+
+  it('should keep user prompt after stripping tags', () => {
+    const line = JSON.stringify({
+      type: 'user',
+      timestamp: '2025-01-01T12:00:00Z',
+      message: {
+        role: 'user',
+        content: '<local-command-caveat>...</local-command-caveat>扫描这个项目',
+      },
+    });
+    const items = parseLine(line);
+    assert.strictEqual(items.length, 1);
+    assert.strictEqual(items[0].content, '扫描这个项目');
+  });
+
+  it('should parse mixed user message with text and tool_result', () => {
+    const line = JSON.stringify({
+      type: 'user',
+      timestamp: '2025-01-01T12:00:00Z',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'text', text: '继续执行' },
+          { type: 'tool_result', tool_use_id: 'toolu_xyz', content: 'done' },
+        ],
+      },
+    });
+    const items = parseLine(line);
+    assert.strictEqual(items.length, 2);
+    assert.strictEqual(items[0].type, StreamItemType.USER_TEXT);
+    assert.strictEqual(items[0].content, '继续执行');
+    assert.strictEqual(items[1].type, StreamItemType.TOOL_OUTPUT);
+    assert.strictEqual(items[1].toolID, 'toolu_xyz');
   });
 
   it('should parse text response', () => {
@@ -558,5 +635,28 @@ describe('agentDisplayName', () => {
 
   it('should handle short agent IDs', () => {
     assert.strictEqual(agentDisplayName('abc'), 'Agent-abc');
+  });
+});
+
+describe('stripNonUserContent', () => {
+  it('should strip local-command-caveat', () => {
+    assert.strictEqual(stripNonUserContent('<local-command-caveat>ignore this</local-command-caveat>real prompt'), 'real prompt');
+  });
+
+  it('should strip command-name and command-stdout', () => {
+    assert.strictEqual(stripNonUserContent('<command-name>/model</command-name><local-command-stdout>Set model</local-command-stdout>'), '');
+  });
+
+  it('should return empty for pure non-user content', () => {
+    assert.strictEqual(stripNonUserContent('<local-command-stdout>output</local-command-stdout>'), '');
+  });
+
+  it('should return original text when no tags present', () => {
+    assert.strictEqual(stripNonUserContent('扫描这个项目'), '扫描这个项目');
+  });
+
+  it('should return empty for null/undefined', () => {
+    assert.strictEqual(stripNonUserContent(null), '');
+    assert.strictEqual(stripNonUserContent(undefined), '');
   });
 });

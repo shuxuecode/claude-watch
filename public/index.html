@@ -147,18 +147,27 @@ body {
 
 /* ── Tree node styles ── */
 .tree-row {
-  display: flex; align-items: center;
+  display: flex; align-items: flex-start;
 }
+.tree-content {
+  flex: 1; min-width: 0;
+}
+.tree-content:hover { background: rgba(255,255,255,0.05); }
+.tree-row.selected > .tree-content { background: rgba(124,58,237,0.3); }
+.tree-content.dim { opacity: 0.4; }
 .tree-node {
-  flex: 1; display: flex; align-items: center;
+  display: flex; align-items: center;
   padding: 3px 2px 3px 0;
   cursor: pointer; white-space: nowrap; gap: 4px;
-  min-width: 0; overflow: hidden;
+  overflow: hidden;
 }
-.tree-node:hover { background: rgba(255,255,255,0.05); }
-.tree-node.selected { background: rgba(124,58,237,0.3); }
-.tree-node.dim { opacity: 0.4; }
 .tree-prefix { color: var(--dim); font-size: 12px; flex-shrink: 0; letter-spacing: 0; font-family: monospace; }
+.tree-activity {
+  font-size: 10px; color: var(--dim); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+  padding: 0 2px 2px; line-height: 1.2;
+  cursor: pointer;
+}
 .tree-node .ctx-pct { font-size: 10px; margin-left: 4px; flex-shrink: 0; }
 .tree-node .ctx-pct.warn { color: var(--yellow); }
 .tree-node .ctx-pct.danger { color: var(--red); }
@@ -249,8 +258,8 @@ body {
 :root[data-theme="light"] .btn.on:hover { background: var(--purple2); color: #fff; }
 :root[data-theme="light"] .btn.on:hover::after { background: var(--purple2); color: #fff; }
 :root[data-theme="light"] .hljs { background: #f0f0f0 !important; }
-:root[data-theme="light"] .tree-node:hover { background: rgba(0,0,0,0.06); }
-:root[data-theme="light"] .tree-node.selected { background: rgba(124,58,237,0.2); }
+:root[data-theme="light"] .tree-content:hover { background: rgba(0,0,0,0.06); }
+:root[data-theme="light"] .tree-row.selected > .tree-content { background: rgba(124,58,237,0.2); }
 :root[data-theme="light"] .tree-node .active-dot.off { color: #bbb; }
 :root[data-theme="light"] #tree-resize-handle:hover,
 :root[data-theme="light"] #tree-resize-handle.active { background: var(--purple); }
@@ -288,6 +297,7 @@ body {
       <button class="btn btn-icon" onclick="selectAll()" data-tooltip="Show all sessions/agents">⊞</button>
       <button class="btn btn-icon accent" onclick="soloSelected()" data-tooltip="Solo selected">⊙</button>
       <button class="btn btn-icon danger" onclick="removeSelectedSession()" data-tooltip="Remove session">✕</button>
+      <button class="btn btn-icon on" id="btn-activity" onclick="toggleActivity()" data-tooltip="Toggle activity info">💬</button>
       <span style="flex:1"></span>
       <span id="tree-cursor-info" style="font-size:10px;color:var(--dim)"></span>
     </div>
@@ -357,6 +367,9 @@ class LRUCache {
 }
 const seenToolIDs = new LRUCache(5000);
 const toolNameMap = new LRUCache(2000);
+const agentActivity = new Map();  // "sessionID:agentID" → { toolName, content }
+const taskDescriptions = new Map(); // toolID → description string
+const MAX_DESC_STORE = 200;
 let filters = new Map();
 
 let showThinking = true;
@@ -364,6 +377,7 @@ let showToolInput = true;
 let showToolOutput = true;
 let showText = true;
 let showHook = true;
+let showActivity = true;
 let autoDiscovery = true;
 
 let renderPending = false;
@@ -646,6 +660,20 @@ function pushItem(item) {
     toolNameMap.set(item.toolID, item.toolName);
   }
 
+  if (item.type === 'tool_input') {
+    // Main 代理不追踪工具调用，只显示用户 prompt
+    if (item.agentID) {
+      agentActivity.set(item.sessionID + ':' + item.agentID, { toolName: item.toolName || '', content: (item.content || '').slice(0, MAX_DESC_STORE) });
+    }
+    if (item.toolID) {
+      taskDescriptions.set(item.toolID, (item.content || '').slice(0, MAX_DESC_STORE));
+    }
+  }
+
+  if (item.type === 'user_text') {
+    agentActivity.set(item.sessionID + ':' + (item.agentID || ''), { toolName: '', content: (item.content || '').slice(0, MAX_DESC_STORE) });
+  }
+
   if (item.toolID) {
     const key = `${item.toolID}:${item.type}`;
     if (seenToolIDs.has(key)) return;
@@ -671,6 +699,7 @@ function isItemVisible(item) {
     case 'tool_output': return showToolOutput;
     case 'text': return showText;
     case 'hook_output': return showHook;
+    case 'user_text': return false;
     default: return true;
   }
 }
@@ -694,14 +723,23 @@ function rebuildNodes() {
       );
       const lastTaskIdx = tasks.length - 1;
       const hasTasks = tasks.length > 0;
-      treeNodes.push({ type: a.type, id: a.id, name: a.name, sessionID: s.id, level: 1, isLast: isLastAgent && !hasTasks });
+      const actKey = s.id + ':' + a.id;
+      const act = agentActivity.get(actKey);
+      treeNodes.push({
+        type: a.type, id: a.id, name: a.name, sessionID: s.id,
+        level: 1, isLast: isLastAgent && !hasTasks,
+        activityTool: act ? act.toolName : '',
+        activityDesc: act ? act.content : '',
+      });
       for (let ti = 0; ti < tasks.length; ti++) {
         const t = tasks[ti];
+        const tDesc = taskDescriptions.get(t.id);
         treeNodes.push({
           type: 'task', id: t.id, name: t.toolName,
           sessionID: s.id, parentAgentID: t.parentAgentID,
           outputPath: t.outputPath, isComplete: t.isComplete,
           level: 2, isLast: isLastAgent && ti === lastTaskIdx,
+          description: tDesc || '',
         });
       }
     }
@@ -736,10 +774,12 @@ function getNodeHTML(node, idx) {
     const subInfo = parts.length > 0 ? ` <span style="color:#6b7280;font-size:10px">${parts.join(' · ')}</span>` : '';
     const agentCount = node.agents ? node.agents.filter(a => a.type === 'agent').length : 0;
     return `<div class="tree-row${selClass ? ' selected' : ''}">
-      <div class="tree-node" onclick="treeClick(${idx})" data-idx="${idx}">
-        <span class="tree-prefix">${treePrefix(node)}</span>${activeDot} ${node.collapsed ? '▸' : '▾'} ${esc(displayName)}
-        ${node.collapsed && agentCount > 0 ? `(${esc(String(agentCount))})` : ''}
-        ${subInfo}
+      <div class="tree-content" onclick="treeClick(${idx})" data-idx="${idx}">
+        <div class="tree-node">
+          <span class="tree-prefix">${treePrefix(node)}</span>${activeDot} ${node.collapsed ? '▸' : '▾'} ${esc(displayName)}
+          ${node.collapsed && agentCount > 0 ? `(${esc(String(agentCount))})` : ''}
+          ${subInfo}
+        </div>
       </div>
       <span class="tree-actions">
         <button class="btn btn-icon accent" onclick="event.stopPropagation();selectIndex(${idx});soloSelected()" data-tooltip="Solo">⊙</button>
@@ -760,9 +800,19 @@ function getNodeHTML(node, idx) {
       ctxPct = `<span class="ctx-pct ${cls}">${pct}%</span>`;
     }
     const activeDot = ctx && (Date.now() - ctx.lastActivity < 120000) ? '<span class="active-dot on">🟢</span>' : '<span class="active-dot off">⚪</span>';
+    const actIcon = node.type === 'main' ? '🗣' : '⚡';
+    const actText = showActivity && (node.activityTool || node.activityDesc)
+      ? (node.activityTool && node.activityDesc ? `${node.activityTool}: ${node.activityDesc}` : (node.activityTool || node.activityDesc))
+      : '';
+    const activityHTML = actText
+      ? `<div class="tree-activity">${actIcon} ${esc(actText)}</div>`
+      : '';
     return `<div class="tree-row${selClass ? ' selected' : ''}">
-      <div class="tree-node${enabled ? '' : ' dim'}" onclick="treeClick(${idx})" data-idx="${idx}">
+      <div class="tree-content${enabled ? '' : ' dim'}" onclick="treeClick(${idx})" data-idx="${idx}">
+        <div class="tree-node">
           <span class="tree-prefix">${treePrefix(node)}</span>${activeDot} ${icon} ${esc(node.name || '')}${ctxPct}
+        </div>
+        ${activityHTML}
       </div>
       <span class="tree-actions">
         <button class="btn btn-icon accent" onclick="event.stopPropagation();selectIndex(${idx});soloSelected()" data-tooltip="Solo">⊙</button>
@@ -773,9 +823,15 @@ function getNodeHTML(node, idx) {
 
   if (node.type === 'task') {
     const icon = node.isComplete ? '✓' : '⏳';
+    const descHTML = showActivity && node.description
+      ? `<div class="tree-activity">📋 ${esc(node.description)}</div>`
+      : '';
     return `<div class="tree-row${selClass ? ' selected' : ''}">
-      <div class="tree-node dim" onclick="treeClick(${idx})" data-idx="${idx}">
+      <div class="tree-content dim" onclick="treeClick(${idx})" data-idx="${idx}">
+        <div class="tree-node">
           <span class="tree-prefix">${treePrefix(node)}</span>${icon} ${esc(node.name || 'bg-task')}
+        </div>
+        ${descHTML}
       </div>
       <span class="tree-actions">
         <button class="btn btn-icon" onclick="event.stopPropagation();selectIndex(${idx});loadBgTask(${idx})" data-tooltip="Load output">▶</button>
@@ -799,7 +855,7 @@ function renderTree() {
   treeEl.innerHTML = html;
 
   // Scroll selected into view
-  const sel = treeEl.querySelector('.tree-node.selected');
+  const sel = treeEl.querySelector('.tree-row.selected');
   if (sel) sel.scrollIntoView({ block: 'nearest' });
 
   treeCursorInfo.textContent = `${treeCursor + 1}/${treeNodes.length}`;
@@ -965,6 +1021,7 @@ function refreshButtons() {
   document.getElementById('btn-tool-output').classList.toggle('on', showToolOutput);
   document.getElementById('btn-text').classList.toggle('on', showText);
   document.getElementById('btn-hook').classList.toggle('on', showHook);
+  document.getElementById('btn-activity').classList.toggle('on', showActivity);
   document.getElementById('btn-autoscroll').classList.toggle('on', autoScroll);
   document.getElementById('btn-tree-toggle').classList.toggle('on', showTree);
   document.getElementById('btn-autodisco').classList.toggle('on', autoDiscovery);
@@ -1144,6 +1201,7 @@ function toggleText() { showText = !showText; needsFullRender = true;
   visibleDirty = true; renderStream(); refreshButtons(); }
 function toggleHook() { showHook = !showHook; needsFullRender = true;
   visibleDirty = true; renderStream(); refreshButtons(); }
+function toggleActivity() { showActivity = !showActivity; rebuildNodes(); scheduleRender(); refreshButtons(); }
 function toggleAutoScroll() { autoScroll = !autoScroll; if (autoScroll) streamEl.scrollTop = streamEl.scrollHeight; renderAll(); }
 function toggleTree() { showTree = !showTree; document.getElementById('tree-panel').classList.toggle('hidden', !showTree); }
 function toggleAutoDiscovery() { sendCmd('toggleAutoDiscovery'); }
