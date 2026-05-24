@@ -28,6 +28,7 @@ function makeItem(overrides = {}) {
   return {
     type: '', sessionID: '', agentID: '', agentName: '', timestamp: 0,
     content: '', toolName: '', toolID: '', durationMs: 0,
+    hookContent: '', hookCommand: '',
     inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0,
     model: '',
     ...overrides,
@@ -212,14 +213,18 @@ function parseAttachment(raw, timestamp) {
   const name = agentDisplayName(raw.agentId);
   switch (raw.attachment.type) {
     case 'hook_success': {
-      const body = raw.attachment.stdout || '';
+      const stdout = (raw.attachment.stdout || '').replace(/\n$/, '');
+      const stdin = raw.attachment.content || '';
+      const hookContent = stdin && stdin !== stdout ? stdin : '';
       return [makeItem({
         type: StreamItemType.HOOK_OUTPUT,
         sessionID: raw.sessionId,
         agentID: raw.agentId || '',
         agentName: name,
         toolName: raw.attachment.hookName || '',
-        content: body,
+        content: stdout,
+        hookContent: hookContent,
+        hookCommand: raw.attachment.command || '',
         durationMs: raw.attachment.durationMs || 0,
         timestamp,
       })];

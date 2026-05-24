@@ -200,6 +200,7 @@ body {
 .stream-line.tool-output { color: var(--green); }
 .stream-line.text { color: var(--text); }
 .stream-line.hook { color: var(--cyan); }
+.stream-line .hook-label { color: var(--dim); }
 .stream-line.diag { color: var(--red); }
 .stream-line.debug { color: var(--gray); }
 .stream-line.marker { color: var(--dim); }
@@ -983,7 +984,11 @@ function renderItem(item) {
       if (item.toolName) label += ' ' + item.toolName;
       if (item.durationMs > 0) label += ' ' + fmtDur(item.durationMs);
       lines.push({ cls: agentTagCls, text: `<span class="tag-label">${esc(agentName + sep + label)}</span>${tsHtml}`, html: true });
-      for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line hook', text: l });
+      if (item.hookCommand) lines.push({ cls: 'stream-line hook', text: `<span class="hook-label">command:</span> ${esc(item.hookCommand)}`, html: true });
+      if (item.hookContent) {
+        for (const l of truncContent(item.hookContent)) lines.push({ cls: 'stream-line hook', text: `<span class="hook-label">content:</span> ${esc(l)}`, html: true });
+      }
+      for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line hook', text: `<span class="hook-label">stdout:</span> ${esc(l)}`, html: true });
       break;
     }
     case 'diagnostics': {

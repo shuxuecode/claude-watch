@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-05-24
+
+- Feature: Hook 输出新增 `command` 和 `content` 字段展示 — `command:` 显示 hook 执行的命令路径，`content:` 显示 hook stdin 输入（仅在非空且与 stdout 不同时展示），`stdout:` 显示 hook 进程标准输出
+- Change: Hook 输出字段名（command/content/stdout）使用灰色（`var(--dim)`），与青色内容区做视觉区分
+- Change: parser 新增 `hookContent` 和 `hookCommand` 字段，从 `attachment.content`（stdin）和 `attachment.command` 提取
+- Fix: stdout 尾部 `\n` 导致多出空行，改为 `.replace(/\n$/, '')` 去除
+- Fix: `attachment.content` 与 `attachment.stdout` 内容相同（PostToolUse 类型常见）时去重，避免 content/stdout 重复展示
+- Test: hook_success 测试从 1 个扩充到 5 个，覆盖全字段解析、尾部换行去除、content/stdout 去重、不同内容保留、空字段处理
+
 ## 2026-05-23 (v0.0.15)
 
 - Feature: 左侧树节点新增任务描述显示 — Main 代理显示用户输入的 Prompt，子代理显示当前执行的 `{toolName}: {content}`（如 `Bash: npm test`），task 节点显示任务描述，CSS `text-overflow: ellipsis` 自动截断

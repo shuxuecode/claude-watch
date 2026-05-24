@@ -277,7 +277,83 @@ describe('Parser - compact_boundary', () => {
 // ============================================================================
 
 describe('Parser - hook_success', () => {
-  it('should parse hook_success attachment', () => {
+  it('should parse hook_success attachment with all fields', () => {
+    const line = JSON.stringify({
+      type: 'attachment', sessionId: 's1', agentId: '',
+      timestamp: '2025-01-01T12:00:00Z',
+      attachment: {
+        type: 'hook_success',
+        hookName: 'PreToolUse:Bash',
+        stdout: 'hook output here',
+        content: 'stdin content here',
+        command: 'node perm-bridge.js',
+        durationMs: 120,
+      },
+    });
+    const items = parseLine(line);
+    assert.strictEqual(items.length, 1);
+    assert.strictEqual(items[0].type, StreamItemType.HOOK_OUTPUT);
+    assert.strictEqual(items[0].toolName, 'PreToolUse:Bash');
+    assert.strictEqual(items[0].content, 'hook output here');
+    assert.strictEqual(items[0].hookContent, 'stdin content here');
+    assert.strictEqual(items[0].hookCommand, 'node perm-bridge.js');
+    assert.strictEqual(items[0].durationMs, 120);
+  });
+
+  it('should strip trailing newline from stdout', () => {
+    const line = JSON.stringify({
+      type: 'attachment', sessionId: 's1', agentId: '',
+      timestamp: '2025-01-01T12:00:00Z',
+      attachment: {
+        type: 'hook_success',
+        hookName: 'PreToolUse:Bash',
+        stdout: '{"continue":true}\n',
+        content: '',
+        command: 'node perm-bridge.js',
+        durationMs: 100,
+      },
+    });
+    const items = parseLine(line);
+    assert.strictEqual(items[0].content, '{"continue":true}');
+  });
+
+  it('should deduplicate content and stdout when identical', () => {
+    const line = JSON.stringify({
+      type: 'attachment', sessionId: 's1', agentId: '',
+      timestamp: '2025-01-01T12:00:00Z',
+      attachment: {
+        type: 'hook_success',
+        hookName: 'PostToolUse:Bash',
+        stdout: 'error detected\n',
+        content: 'error detected',
+        command: 'error-detector.sh',
+        durationMs: 500,
+      },
+    });
+    const items = parseLine(line);
+    assert.strictEqual(items[0].content, 'error detected');
+    assert.strictEqual(items[0].hookContent, '');
+  });
+
+  it('should keep content separate when different from stdout', () => {
+    const line = JSON.stringify({
+      type: 'attachment', sessionId: 's1', agentId: '',
+      timestamp: '2025-01-01T12:00:00Z',
+      attachment: {
+        type: 'hook_success',
+        hookName: 'UserPromptSubmit',
+        stdout: 'review complete',
+        content: 'user prompt input',
+        command: 'activator.sh',
+        durationMs: 749,
+      },
+    });
+    const items = parseLine(line);
+    assert.strictEqual(items[0].content, 'review complete');
+    assert.strictEqual(items[0].hookContent, 'user prompt input');
+  });
+
+  it('should handle empty content and command', () => {
     const line = JSON.stringify({
       type: 'attachment', sessionId: 's1', agentId: '',
       timestamp: '2025-01-01T12:00:00Z',
@@ -289,11 +365,8 @@ describe('Parser - hook_success', () => {
       },
     });
     const items = parseLine(line);
-    assert.strictEqual(items.length, 1);
-    assert.strictEqual(items[0].type, StreamItemType.HOOK_OUTPUT);
-    assert.strictEqual(items[0].toolName, 'pre-commit');
-    assert.strictEqual(items[0].content, 'hook output here');
-    assert.strictEqual(items[0].durationMs, 120);
+    assert.strictEqual(items[0].hookContent, '');
+    assert.strictEqual(items[0].hookCommand, '');
   });
 
   it('should skip non-hook_success attachment', () => {
