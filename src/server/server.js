@@ -10,6 +10,8 @@ var { WebSocketServer } = require('ws');
 var { Watcher, listSessions, listActiveSessions } = require('../watcher/watcher');
 var { setDebugAll, contextWindowFor } = require('../parser/parser');
 
+var PACKAGE_VERSION = require('../../package.json').version;
+
 var MIME = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
@@ -306,7 +308,7 @@ class DashboardServer {
   }
 
   sendConfig(ws) {
-    this.send(ws, 'config', { collapseAfter: this.collapseAfterMs });
+    this.send(ws, 'config', { collapseAfter: this.collapseAfterMs, version: PACKAGE_VERSION });
   }
 
   setupWatcher(watcherOpts) {
