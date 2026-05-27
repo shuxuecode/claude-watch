@@ -657,6 +657,8 @@ function handleItemBatch(items) {
       if (s) { s.title = item.content.slice(0, 30); }
       continue;
     }
+    const s = sessionsMap.get(item.sessionID);
+    if (s) s.lastActivity = Date.now();
     pushItem(item);
   }
   scheduleRender();

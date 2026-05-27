@@ -50,11 +50,19 @@ class DashboardServer {
     return sessionID + ':' + (agentID || '');
   }
 
+  itemTime(item) {
+    if (item.timestamp) {
+      const ts = item.timestamp instanceof Date ? item.timestamp : new Date(item.timestamp);
+      if (!isNaN(ts.getTime())) return ts.getTime();
+    }
+    return Date.now();
+  }
+
   updateContext(item) {
     const key = this.getCtxKey(item.sessionID, item.agentID);
     let ctx = this.contextMap.get(key);
     if (!ctx) {
-      ctx = { inputTokens: 0, outputTokens: 0, cacheCreation: 0, cacheRead: 0, model: '', contextWindow: 200000, lastActivity: Date.now() };
+      ctx = { inputTokens: 0, outputTokens: 0, cacheCreation: 0, cacheRead: 0, model: '', contextWindow: 200000, lastActivity: this.itemTime(item) };
       this.contextMap.set(key, ctx);
     }
     // inputTokens: Claude API returns cumulative total per call, not incremental — use Math.max
@@ -67,7 +75,7 @@ class DashboardServer {
       ctx.model = item.model;
       ctx.contextWindow = contextWindowFor(item.model);
     }
-    ctx.lastActivity = Date.now();
+    ctx.lastActivity = Math.max(ctx.lastActivity || 0, this.itemTime(item));
   }
 
   cleanupContextMap() {
