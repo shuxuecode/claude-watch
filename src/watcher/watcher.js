@@ -81,10 +81,11 @@ async function readAgentType(jsonlPath) {
 // ============================================================================
 
 class Session {
-  constructor(id, projectPath, mainFile) {
+  constructor(id, projectPath, mainFile, birthtimeMs) {
     this.id = id;
     this.projectPath = projectPath;
     this.mainFile = mainFile;
+    this.birthtimeMs = birthtimeMs || 0;
     this.subagents = {};       // agentID -> file path
     this.subagentTypes = {};   // agentID -> agentType
     this.backgroundTasks = {}; // toolID -> BackgroundTask
@@ -207,13 +208,13 @@ class Watcher extends EventEmitter {
     return this.buildSession(mainFile);
   }
 
-  async buildSession(mainFile) {
+  async buildSession(mainFile, birthtimeMs) {
     const base = path.basename(mainFile);
     const id = base.replace(/\.jsonl$/, '');
     const projectDir = path.basename(path.dirname(mainFile));
     const projectPath = await resolveProjectPath(projectDir);
 
-    const session = new Session(id, projectPath, mainFile);
+    const session = new Session(id, projectPath, mainFile, birthtimeMs);
 
     // Find subagent files
     const subagentDir = path.join(path.dirname(mainFile), id, 'subagents');
@@ -245,7 +246,7 @@ class Watcher extends EventEmitter {
       await this._walkDir(this.claudeDir, (filePath, stats) => {
         if (!isMainSessionFile(filePath, stats)) return;
         if (now - stats.mtimeMs > this.activeWindow) return;
-        discovered.push({ filePath, modTime: stats.mtimeMs });
+        discovered.push({ filePath, modTime: stats.mtimeMs, birthtimeMs: stats.birthtimeMs });
       });
     } catch (err) {
       if (this.debug) console.error('[watcher] discoverActiveSessions error:', err.message);
@@ -258,12 +259,12 @@ class Watcher extends EventEmitter {
     }
 
     for (const d of discovered) {
-      const session = await this.buildSession(d.filePath);
+      const session = await this.buildSession(d.filePath, d.birthtimeMs);
       if (!this.sessions.has(session.id)) {
         this.sessions.set(session.id, session);
 
         // Broadcast so connected clients learn about the new session
-        this.emit('broadcast', 'newSession', { sessionID: session.id, projectPath: session.projectPath });
+        this.emit('broadcast', 'newSession', { sessionID: session.id, projectPath: session.projectPath, birthtimeMs: session.birthtimeMs });
         for (const [agentID, agentType] of Object.entries(session.subagentTypes)) {
           this.emit('broadcast', 'newAgent', { sessionID: session.id, agentID, agentType });
         }
@@ -528,12 +529,12 @@ class Watcher extends EventEmitter {
     // Only accept sessions within the active window
     if (Date.now() - stats.mtimeMs > this.activeWindow) return;
 
-    const session = await this.buildSession(p);
+    const session = await this.buildSession(p, stats.birthtimeMs);
     if (this.sessions.has(session.id)) return;
 
     this.sessions.set(session.id, session);
     this._registerSessionWatches(session);
-    this.emit('broadcast', 'newSession', { sessionID: session.id, projectPath: session.projectPath });
+    this.emit('broadcast', 'newSession', { sessionID: session.id, projectPath: session.projectPath, birthtimeMs: session.birthtimeMs });
 
     // Broadcast pre-existing subagents to frontend
     for (const [agentID, agentType] of Object.entries(session.subagentTypes)) {
@@ -645,7 +646,7 @@ class Watcher extends EventEmitter {
         const id = path.basename(filePath).replace(/\.jsonl$/, '');
         if (this.sessions.has(id)) return;
 
-        fileCandidates.push({ filePath, modTime: stats.mtimeMs });
+        fileCandidates.push({ filePath, modTime: stats.mtimeMs, birthtimeMs: stats.birthtimeMs });
       });
     } catch (err) {
       if (this.debug) console.error('[watcher] _checkForNewSessions error:', err.message);
@@ -653,7 +654,7 @@ class Watcher extends EventEmitter {
 
     const candidates = [];
     for (const fc of fileCandidates) {
-      const session = await this.buildSession(fc.filePath);
+      const session = await this.buildSession(fc.filePath, fc.birthtimeMs);
       candidates.push({ session, modTime: fc.modTime });
     }
 
@@ -671,7 +672,7 @@ class Watcher extends EventEmitter {
         await this._readSessionFiles(c.session);
       }
 
-      this.emit('broadcast', 'newSession', { sessionID: c.session.id, projectPath: c.session.projectPath });
+      this.emit('broadcast', 'newSession', { sessionID: c.session.id, projectPath: c.session.projectPath, birthtimeMs: c.session.birthtimeMs });
 
       for (const [agentID, agentType] of Object.entries(c.session.subagentTypes)) {
         this.emit('broadcast', 'newAgent', { sessionID: c.session.id, agentID, agentType });
@@ -1258,6 +1259,7 @@ async function _listSessionsFiltered(limit, activeWithin) {
       path: c.filePath,
       projectPath,
       modified: c.stats.mtime,
+      birthtimeMs: c.stats.birthtimeMs,
       isActive: (now - c.stats.mtimeMs) < RecentActivityThreshold,
     });
   }

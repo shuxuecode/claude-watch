@@ -149,6 +149,15 @@ body {
 .tree-row {
   display: flex; align-items: flex-start;
 }
+.tree-row-session {
+  margin-top: 6px;
+}
+.tree-row-folder {
+  margin-top: 6px;
+}
+.folder-node {
+  font-size: 13px; font-weight: 500; color: var(--yellow);
+}
 .tree-content {
   flex: 1; min-width: 0;
 }
@@ -356,6 +365,7 @@ let sessions = [];
 let sessionsMap = new Map(); // id -> session, for O(1) lookups
 let treeNodes = [];
 let treeCursor = 0;
+let folderCollapsed = {}; // dateStr -> boolean, default collapsed
 let streamItems = [];
 let visibleItems = [];
 let visibleDirty = true;
@@ -402,7 +412,7 @@ let collapseAfter = 0;
 let collapseTimer = null;
 let activeRefreshTimer = null;
 
-const MAX_ITEMS = 3000;
+const MAX_ITEMS = 9999;
 const MAX_LINES = 50;
 let renderedItemCount = 0;
 let needsFullRender = true;
@@ -506,7 +516,7 @@ function handleMessage(msg) {
     case 'newBackgroundTask': handleNewBgTask(msg.payload); break;
     case 'sessionRemoved': handleSessionRemoved(msg.payload); break;
     case 'autoDiscoveryChanged': autoDiscovery = msg.payload.enabled; scheduleRender(); break;
-    case 'context': contextData = msg.payload; scheduleRender(); break;
+    case 'context': contextData = msg.payload; updateTreeDots(); break;
     case 'config':
       if (msg.payload.version) appVersion = msg.payload.version;
       if (msg.payload.collapseAfter > 0 && !collapseTimer) {
@@ -534,13 +544,13 @@ function handleSnapshot(payload) {
         id: s.id, projectPath: s.projectPath, title: '',
         folder: folderName(s.projectPath), model: '',
         agents: [], tasks: [], collapsed: false, pinned: false,
-        lastActivity: Date.now(),
+        lastActivity: s.birthtimeMs || 0,
+        birthtimeMs: s.birthtimeMs || 0,
       };
       sessions.push(session);
       sessionsMap.set(session.id, session);
       session.agents.push({ id: '', name: 'Main', type: 'main' });
     }
-    session.lastActivity = Date.now();
     for (const [aid, atype] of Object.entries(s.subagents || {})) {
       if (!session.agents.find(a => a.id === aid)) {
         session.agents.push({ id: aid, name: agentDisplayName(aid, atype), type: 'agent' });
@@ -560,7 +570,7 @@ function handleSnapshot(payload) {
   rebuildNodes();
   needsFullRender = true;
   visibleDirty = true;
-  scheduleRender();
+  scheduleTreeRender();
 }
 
 function handleNewSession(payload) {
@@ -571,6 +581,7 @@ function handleNewSession(payload) {
     agents: [{ id: '', name: 'Main', type: 'main' }],
     tasks: [], collapsed: false, pinned: false,
     lastActivity: Date.now(),
+    birthtimeMs: payload.birthtimeMs || 0,
   };
   sessions.push(session);
   sessionsMap.set(session.id, session);
@@ -578,7 +589,7 @@ function handleNewSession(payload) {
   rebuildNodes();
   needsFullRender = true;
   visibleDirty = true;
-  scheduleRender();
+  scheduleTreeRender();
 }
 
 function handleNewAgent(payload) {
@@ -593,7 +604,7 @@ function handleNewAgent(payload) {
   rebuildNodes();
   needsFullRender = true;
   visibleDirty = true;
-  scheduleRender();
+  scheduleTreeRender();
 }
 
 function handleNewBgTask(payload) {
@@ -605,7 +616,7 @@ function handleNewBgTask(payload) {
     isComplete: payload.isComplete,
   });
   rebuildNodes();
-  scheduleRender();
+  scheduleTreeRender();
 }
 
 function handleSessionRemoved(payload) {
@@ -618,7 +629,7 @@ function handleSessionRemoved(payload) {
   rebuildNodes();
   needsFullRender = true;
   visibleDirty = true;
-  scheduleRender();
+  scheduleTreeRender();
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -713,10 +724,30 @@ function isItemVisible(item) {
 // ══════════════════════════════════════════════════════════════════════════════
 
 function rebuildNodes() {
-  treeNodes = [];
+  // Sort sessions by creation time, newest first
+  sessions.sort((a, b) => (b.birthtimeMs || 0) - (a.birthtimeMs || 0));
+
+  const today = new Date();
+  const todayStr = `${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+
+  const todaySessions = [];
+  const olderByDate = new Map(); // dateStr -> [sessions]
+
   for (const s of sessions) {
-    treeNodes.push({ type: 'session', level: 0, isLast: false, ...s });
-    if (s.collapsed) continue;
+    const dateStr = s.birthtimeMs ? formatTime(s.birthtimeMs).split(' ')[0] : null;
+    if (!dateStr || dateStr === todayStr) {
+      todaySessions.push(s);
+    } else {
+      if (!olderByDate.has(dateStr)) olderByDate.set(dateStr, []);
+      olderByDate.get(dateStr).push(s);
+    }
+  }
+
+  treeNodes = [];
+
+  function addSessionWithChildren(s, inFolder) {
+    treeNodes.push({ type: 'session', level: 0, isLast: false, inFolder: !!inFolder, ...s });
+    if (s.collapsed) return;
     const agents = s.agents || [];
     const lastAgentIdx = agents.length - 1;
     for (let ai = 0; ai < agents.length; ai++) {
@@ -748,15 +779,58 @@ function rebuildNodes() {
       }
     }
   }
-  // Mark last session
-  const sessionNodes = treeNodes.filter(n => n.type === 'session');
-  if (sessionNodes.length > 0) sessionNodes[sessionNodes.length - 1].isLast = true;
+
+  // Today's sessions (expanded)
+  for (const s of todaySessions) {
+    addSessionWithChildren(s, false);
+  }
+
+  // Date folders (older dates, collapsed by default)
+  const sortedDates = [...olderByDate.keys()].sort((a, b) => b.localeCompare(a));
+  for (let di = 0; di < sortedDates.length; di++) {
+    const dateStr = sortedDates[di];
+    const folderSessions = olderByDate.get(dateStr);
+    const collapsed = folderCollapsed[dateStr] !== false; // default collapsed
+    const isLastFolder = di === sortedDates.length - 1;
+
+    treeNodes.push({
+      type: 'date-folder', date: dateStr, level: 0, isLast: false,
+      collapsed, sessionCount: folderSessions.length,
+    });
+
+    if (!collapsed) {
+      for (const s of folderSessions) {
+        addSessionWithChildren(s, true);
+      }
+    }
+  }
+
+  // Mark last session among today's sessions
+  const todaySessionNodes = treeNodes.filter(n => n.type === 'session' && !n.inFolder);
+  if (todaySessionNodes.length > 0) todaySessionNodes[todaySessionNodes.length - 1].isLast = true;
+
+  // Mark last session inside each folder
+  for (const dateStr of sortedDates) {
+    if (folderCollapsed[dateStr] !== false) continue;
+    const folderSessionNodes = treeNodes.filter(n => n.type === 'session' && n.inFolder);
+    // Find sessions belonging to this folder
+    const thisFolder = [];
+    let inThisFolder = false;
+    for (const n of treeNodes) {
+      if (n.type === 'date-folder' && n.date === dateStr) { inThisFolder = true; continue; }
+      if (n.type === 'date-folder' && n.date !== dateStr) { inThisFolder = false; continue; }
+      if (inThisFolder && n.type === 'session') thisFolder.push(n);
+    }
+    if (thisFolder.length > 0) thisFolder[thisFolder.length - 1].isLast = true;
+  }
 
   if (treeCursor >= treeNodes.length) treeCursor = Math.max(0, treeNodes.length - 1);
 }
 
 function treePrefix(node) {
-  if (node.level === 0) return '';
+  if (node.level === 0) {
+    return node.inFolder ? '    ' : '';
+  }
   const branch = node.isLast ? '└── ' : '├── ';
   if (node.level === 1) return branch;
   // Level 2: need to check if parent agent is last
@@ -770,6 +844,17 @@ function getNodeHTML(node, idx) {
   const isSelected = idx === treeCursor;
   const selClass = isSelected ? ' selected' : '';
 
+  if (node.type === 'date-folder') {
+    const icon = node.collapsed ? '▸' : '▾';
+    return `<div class="tree-row tree-row-folder${selClass ? ' selected' : ''}">
+      <div class="tree-content" onclick="treeClick(${idx})" data-idx="${idx}">
+        <div class="tree-node folder-node">
+          ${icon} 📁 ${node.date} <span style="font-size:10px;color:var(--dim);margin-left:4px">(${node.sessionCount})</span>
+        </div>
+      </div>
+    </div>`;
+  }
+
   if (node.type === 'session') {
     const displayName = node.title || folderName(node.projectPath) || node.id.slice(0, 14);
     const parts = [];
@@ -777,12 +862,15 @@ function getNodeHTML(node, idx) {
     const activeDot = isSessionActive(node) ? '<span class="active-dot on">🟢</span>' : '<span class="active-dot off">⚪</span>';
     const subInfo = parts.length > 0 ? ` <span style="color:#6b7280;font-size:10px">${parts.join(' · ')}</span>` : '';
     const agentCount = node.agents ? node.agents.filter(a => a.type === 'agent').length : 0;
-    return `<div class="tree-row${selClass ? ' selected' : ''}">
+    const timeStr = formatTime(node.birthtimeMs);
+    const timeHtml = timeStr ? `<span style="margin-left:auto;font-size:10px;color:var(--dim);flex-shrink:0">${timeStr}</span>` : '';
+    return `<div class="tree-row tree-row-session${selClass ? ' selected' : ''}">
       <div class="tree-content" onclick="treeClick(${idx})" data-idx="${idx}">
         <div class="tree-node">
           <span class="tree-prefix">${treePrefix(node)}</span>${activeDot} ${node.collapsed ? '▸' : '▾'} ${esc(displayName)}
           ${node.collapsed && agentCount > 0 ? `(${esc(String(agentCount))})` : ''}
           ${subInfo}
+          ${timeHtml}
         </div>
       </div>
       <span class="tree-actions">
@@ -865,20 +953,42 @@ function renderTree() {
   treeCursorInfo.textContent = `${treeCursor + 1}/${treeNodes.length}`;
 }
 
+function updateTreeDots() {
+  const dots = treeEl.querySelectorAll('.active-dot');
+  const now = Date.now();
+  for (const dot of dots) {
+    const content = dot.closest('.tree-content');
+    if (!content) continue;
+    const idx = parseInt(content.getAttribute('data-idx'));
+    if (isNaN(idx)) continue;
+    const node = treeNodes[idx];
+    if (!node || node.type !== 'session') continue;
+    const active = isSessionActive(node);
+    const newCls = active ? 'active-dot on' : 'active-dot off';
+    const newHTML = active ? '🟢' : '⚪';
+    if (dot.className !== newCls) {
+      dot.className = newCls;
+      dot.innerHTML = newHTML;
+    }
+  }
+}
+
+const ACTIVE_THRESHOLD = 600000; // 10 minutes
+
 function isSessionActive(session) {
   if (!session) return false;
   const now = Date.now();
-  // Check main agent
+  // Main agent: 10 minutes
   const mainCtx = contextData[session.id + ':'];
-  if (mainCtx && (now - mainCtx.lastActivity) < 120000) return true;
-  // Check subagents
+  if (mainCtx && (now - mainCtx.lastActivity) < 600000) return true;
+  // Subagents: 3 minutes
   for (const a of session.agents) {
     if (a.id === '') continue;
     const ctx = contextData[session.id + ':' + a.id];
-    if (ctx && (now - ctx.lastActivity) < 120000) return true;
+    if (ctx && (now - ctx.lastActivity) < 180000) return true;
   }
-  // Fallback: check own lastActivity
-  return (now - session.lastActivity) < 120000;
+  // Session fallback: 10 minutes
+  return (now - session.lastActivity) < 600000;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1075,7 +1185,11 @@ function treeClick(idx) {
   selectIndex(idx);
   const node = treeNodes[idx];
   if (!node) return;
-  if (node.type === 'session') {
+  if (node.type === 'date-folder') {
+    node.collapsed = !node.collapsed;
+    folderCollapsed[node.date] = node.collapsed;
+    rebuildNodes();
+  } else if (node.type === 'session') {
     const session = sessions.find(s => s.id === node.id);
     if (session) {
       session.collapsed = !session.collapsed;
@@ -1216,7 +1330,7 @@ function toggleText() { showText = !showText; needsFullRender = true;
   visibleDirty = true; renderStream(); refreshButtons(); }
 function toggleHook() { showHook = !showHook; needsFullRender = true;
   visibleDirty = true; renderStream(); refreshButtons(); }
-function toggleActivity() { showActivity = !showActivity; rebuildNodes(); scheduleRender(); refreshButtons(); }
+function toggleActivity() { showActivity = !showActivity; rebuildNodes(); scheduleTreeRender(); refreshButtons(); }
 function toggleAutoScroll() { autoScroll = !autoScroll; if (autoScroll) streamEl.scrollTop = streamEl.scrollHeight; renderAll(); }
 function toggleTree() { showTree = !showTree; document.getElementById('tree-panel').classList.toggle('hidden', !showTree); }
 function toggleAutoDiscovery() { sendCmd('toggleAutoDiscovery'); }
@@ -1348,6 +1462,13 @@ function fmtDur(ms) {
   return `(${(ms / 60000).toFixed(1)}m)`;
 }
 
+function formatTime(ms) {
+  if (!ms) return '';
+  const d = new Date(ms);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
 function fmtTimestamp(ts) {
   if (!ts) return '';
   const d = ts instanceof Date ? ts : new Date(ts);
@@ -1373,6 +1494,17 @@ function renderAll() {
 }
 
 function scheduleRender() {
+  if (!renderPending) {
+    renderPending = true;
+    requestAnimationFrame(() => {
+      renderPending = false;
+      renderStream();
+      refreshButtons();
+    });
+  }
+}
+
+function scheduleTreeRender() {
   if (!renderPending) {
     renderPending = true;
     requestAnimationFrame(() => {

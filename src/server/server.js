@@ -22,7 +22,7 @@ var MIME = {
   '.ico': 'image/x-icon',
 };
 
-var MAX_ITEM_BUFFER = 2000;
+var MAX_ITEM_BUFFER = 9999;
 var CONTEXT_STALE_MS = 60 * 60 * 1000; // 60 minutes
 
 class DashboardServer {
@@ -281,6 +281,7 @@ class DashboardServer {
     const sessions = this.watcher.getSessionsSnapshot().map(s => ({
       id: s.id,
       projectPath: s.projectPath,
+      birthtimeMs: s.birthtimeMs || 0,
       subagents: Object.entries(s.subagentTypes || s.subagents || {}).reduce((acc, [id, type]) => {
         acc[id] = typeof type === 'string' ? type : '';
         return acc;

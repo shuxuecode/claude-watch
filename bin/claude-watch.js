@@ -131,7 +131,7 @@ async function main() {
     sessionID: '',
     skipHistory: false,
     pollMs: 500,
-    activeWindow: 30 * 60 * 1000,
+    activeWindow: 24 * 60 * 60 * 1000,
     maxSessions: 0,
     collapseAfter: 0,
     debugAll: false,
