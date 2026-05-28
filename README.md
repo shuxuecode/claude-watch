@@ -9,8 +9,12 @@ Claude Code writes detailed JSONL logs under `~/.claude/projects/` as it works �
 ## Features
 
 - **Real-time streaming** — thinking, tool calls, tool results, and text responses appear as they happen
-- **Multi-session** — watch all Claude Code sessions from the past 24 hours in a tree view, grouped by date
+- **Multi-session** — watch all Claude Code sessions in a tree view, grouped by date; active sessions stay flat regardless of age
 - **Subagent tracking** — see subagent activity nested under their parent session
+- **Color-coded session tags** — each session gets a unique colored hash prefix for easy visual distinction
+- **Agent-level activity** — active dots on agent/main nodes (not just sessions) with configurable thresholds
+- **Session hiding** — remove unwanted sessions; hidden state persists for 24h via localStorage
+- **Code block copy** — one-click copy button on every markdown code block
 - **Token & cost visibility** — tracks input/output/cache tokens per agent, with context window utilization
 - **Filter controls** — toggle thinking, tool input, tool output, hook output, and text visibility independently
 - **Auto-discovery** — automatically picks up new sessions as they start (toggleable)
@@ -46,7 +50,7 @@ Shorter alias: `cc-watch` (equivalent to `claude-code-watch`).
 
 OPTIONS:
     -p, --port <port>    HTTP port (default: 23000)
-    -h, --host <host>    Bind host (default: 127.0.0.1)
+    --host <host>        Bind host (default: 127.0.0.1)
     -s <ID>              Watch a specific session by ID
     -n                   Start from newest (skip history, live only)
     -l [N]               List recent sessions (default 10) and exit
@@ -57,7 +61,7 @@ OPTIONS:
     -D                   Debug: show raw type:subtype for every JSONL line we'd drop
     --poll <ms>          Polling interval in milliseconds (default: 500)
     -v                   Show version
-    --help               Show this help
+    -h, --help           Show this help
 ```
 
 ### Examples
@@ -76,7 +80,7 @@ claude-code-watch -s abc123-def456
 claude-code-watch -n
 
 # Custom port and host
-claude-code-watch -p 8080 -h 0.0.0.0
+claude-code-watch -p 8080 --host 0.0.0.0
 
 # Limit tree to 5 most recent sessions, auto-collapse after 2m of inactivity
 claude-code-watch -m 5 -c 2m

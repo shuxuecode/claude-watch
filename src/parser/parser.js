@@ -455,15 +455,7 @@ function extractToolResultContent(content) {
 
 function stripNonUserContent(text) {
   if (!text) return '';
-  // Remove tags that wrap non-user content
-  let s = text;
-  s = s.replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/g, '');
-  s = s.replace(/<command-name>[\s\S]*?<\/command-name>/g, '');
-  s = s.replace(/<command-message>[\s\S]*?<\/command-message>/g, '');
-  s = s.replace(/<command-args>[\s\S]*?<\/command-args>/g, '');
-  s = s.replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/g, '');
-  // Trim and return; empty string means no real user content
-  return s.trim();
+  return text.replace(/<(?:local-command-caveat|command-name|command-message|command-args|local-command-stdout)>[\s\S]*?<\/(?:local-command-caveat|command-name|command-message|command-args|local-command-stdout)>/g, '').trim();
 }
 
 // ============================================================================
@@ -483,7 +475,7 @@ function formatToolInput(toolName, input) {
 
   switch (toolName) {
     case 'Bash':
-      if (inp.description) return truncate(`${inp.command}\n  # ${inp.description}`);
+      if (inp.description) return truncate(`${inp.command || ''}\n  # ${inp.description}`);
       return truncate(inp.command || '');
     case 'Read':
       return inp.file_path || '';

@@ -32,11 +32,13 @@ function getClaudeProjectsDir() {
   return path.join(os.homedir(), '.claude', 'projects');
 }
 
+const _projectPathCache = new Map();
+
 async function resolveProjectPath(encoded) {
+  if (_projectPathCache.has(encoded)) return _projectPathCache.get(encoded);
   let s = encoded;
   if (s.startsWith('-')) s = s.slice(1);
   if (!s) return '';
-
   const parts = s.split('-');
 
   // Try progressively joining segments from the right with dashes
@@ -46,14 +48,18 @@ async function resolveProjectPath(encoded) {
     const testPath = `/${pathPart}/${dirPart}`;
     try {
       await fsp.access(testPath);
-      return `${pathPart}/${dirPart}`;
+      const result = `${pathPart}/${dirPart}`;
+      _projectPathCache.set(encoded, result);
+      return result;
     } catch {
       // Path doesn't exist, try next combination
     }
   }
 
   // Fallback to naive conversion
-  return s.replace(/-/g, '/');
+  const result = s.replace(/-/g, '/');
+  _projectPathCache.set(encoded, result);
+  return result;
 }
 
 function isMainSessionFile(filePath, stats) {
@@ -339,6 +345,11 @@ class Watcher extends EventEmitter {
     this.watcher.on('unlink', (p) => {
       this.filePositions.delete(p);
       this.fileContexts.delete(p);
+      const timer = this.debounceTimers.get(p);
+      if (timer) {
+        clearTimeout(timer);
+        this.debounceTimers.delete(p);
+      }
     });
     this.watcher.on('error', (err) => this.emit('error', err));
 
@@ -877,14 +888,14 @@ class Watcher extends EventEmitter {
   async _initializeSessionReading(sessions) {
     let shouldSkip = this.skipHistory;
     if (!shouldSkip) {
-      let totalLines = 0;
+      let totalEstimate = 0;
       for (const session of sessions) {
-        totalLines += await this._countFileLines(session.mainFile);
+        totalEstimate += await this._estimateFileLines(session.mainFile);
         for (const agentPath of Object.values(session.subagents)) {
-          totalLines += await this._countFileLines(agentPath);
+          totalEstimate += await this._estimateFileLines(agentPath);
         }
       }
-      shouldSkip = totalLines > AutoSkipLineThreshold;
+      shouldSkip = totalEstimate > AutoSkipLineThreshold;
     }
 
     if (shouldSkip) {
@@ -982,17 +993,17 @@ class Watcher extends EventEmitter {
         if (pos === stats.size) { await handle.close(); handle = null; return; }
 
         newPos = pos;
+        const fileSize = stats.size;
         // Read in chunks to avoid large buffer allocations for big file deltas
         let carryOver = ''; // incomplete trailing line from previous chunk
         let carryOverBytes = 0; // byte length of carryOver (to avoid re-reading it)
         const buf = Buffer.alloc(MaxReadChunk);
 
         while (true) {
-          const currentStats = await handle.stat();
           const readFrom = newPos + carryOverBytes;
-          if (readFrom >= currentStats.size) break;
+          if (readFrom >= fileSize) break;
 
-          const readLen = Math.min(MaxReadChunk, currentStats.size - readFrom);
+          const readLen = Math.min(MaxReadChunk, fileSize - readFrom);
           const { bytesRead } = await handle.read(buf, 0, readLen, readFrom);
           if (bytesRead === 0) break;
 
@@ -1076,7 +1087,7 @@ class Watcher extends EventEmitter {
           }
 
           newPos += chunkBytes;
-          this.filePositions.set(filePath, Math.min(newPos, currentStats.size));
+          this.filePositions.set(filePath, Math.min(newPos, fileSize));
         }
 
         // Process any remaining carryOver as a final incomplete line (no trailing \n).
@@ -1103,27 +1114,10 @@ class Watcher extends EventEmitter {
     }
   }
 
-  async _countFileLines(filePath) {
+  async _estimateFileLines(filePath) {
     try {
       const stat = await fsp.stat(filePath);
-      if (stat.size === 0) return 0;
-      const handle = await fsp.open(filePath, 'r');
-      const buf = Buffer.alloc(8192);
-      let count = 0;
-      let pos = 0;
-      try {
-        while (pos < stat.size) {
-          const readLen = Math.min(8192, stat.size - pos);
-          const { bytesRead } = await handle.read(buf, 0, readLen, pos);
-          for (let i = 0; i < bytesRead; i++) {
-            if (buf[i] === 0x0A) count++;
-          }
-          pos += bytesRead;
-        }
-      } finally {
-        await handle.close();
-      }
-      return count;
+      return Math.ceil(stat.size / 500);
     } catch {
       return 0;
     }

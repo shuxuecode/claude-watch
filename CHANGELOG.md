@@ -1,5 +1,40 @@
 # Changelog
 
+## 2026-05-28
+
+### 新功能
+
+- Feature: 会话隐藏 — 删除会话时加入 `hiddenSessionIDs` 并持久化到 localStorage（24h 过期），重新打开页面后隐藏的会话不再出现
+- Feature: 会话彩色前缀标识 — 每个会话在左侧树和右侧流面板显示彩色 hash 前缀（如 `[1A2B]`），基于 `colorRank` 用 HSL 色轮分配颜色，方便多会话视觉区分
+- Feature: 代码块一键复制 — 代码块 header 右侧新增 ⎘ 复制按钮，点击后复制代码内容并在 1.5s 内显示 ✓ 反馈
+- Feature: agent/main 节点活跃指示 — 活跃绿点从仅 session 级别细化到 agent/main 级别，main 活跃阈值 10 分钟、agent 活跃阈值 3 分钟
+- Feature: snapshot 追加 `lastActivities` — 服务端从 itemBuffer 计算各 agent 最后活动，前端初始化时填充 `agentActivity`，跳过历史模式下也能看到各节点活动描述
+- Feature: 活跃会话不进历史文件夹 — 创建日期较早但当前活跃的会话归入 flatSessions（与今日会话并列），不再被折叠进历史日期分组
+- Feature: 批量发送阈值 — 新增 `FLUSH_BATCH_LIMIT=50`，pending items 满 50 条立即广播不等 200ms timer，减少高频场景延迟
+
+### Bug 修复
+
+- Fix: CLI `-h` 短选项冲突 — `-h` 原同时用于 `--host` 和 `--help`，改为 `-h` 仅映射 `--help`，`--host` 不再接受短选项
+- Fix: 活动窗口默认值不合理 — `-w` 默认值从 5m 改为 24h，与 UI 活跃阈值对齐
+- Fix: 自动更新失败静默无反馈 — npm 全局更新 stderr 从 `ignore` 改为 `pipe`，失败时打印 exit code 和 stderr 内容
+- Fix: 刷新页面后所有绿点全亮 — session `lastActivity` 改用 item 真实时间戳（`itemTime()`）替代 `Date.now()`，避免页面加载瞬间把所有会话标记为活跃
+- Fix: `renderStream` XSS 风险 — CSS class 名也经过 `esc()` 转义，防止恶意 class 注入
+- Fix: watcher 文件删除后 debounce timer 泄漏 — unlink 事件中清理对应 `debounceTimers`，防止已删除文件的定时器残留
+- Fix: `formatToolInput('Bash')` 空值崩溃 — `inp.command` 加 `|| ''` 空值保护，防止 description 存在但 command 为 undefined 时报错
+- Fix: `_countFileLines` 性能瓶颈 — 改为 `_estimateFileLines` 用 `stat.size / 500` 估算，避免逐字节读文件数行数导致历史初始化慢
+
+### 性能优化
+
+- Perf: 树渲染增量更新 — `treeDirty` 标记 + cursor 变化只切换 selected class，不再每次全量重写 `innerHTML`
+- Perf: solo/filter 判断加速 — 新增 `visibleFilterCount` 快速判断 solo 状态（O(1) 替代 O(n) 遍历全部 session）
+- Perf: 活跃刷新降频 — 15s 定时器从 `rebuildNodes + renderTree` 改为只 `updateTreeDots + refreshButtons`
+- Perf: `resolveProjectPath` 缓存 — `_projectPathCache` 避免重复 fs.access 查找
+- Perf: `_allowedPrefix` 缓存 — home realpath 只计算一次，不再每次 HTTP 请求都调用
+- Perf: watcher 读取循环缓存 `fileSize` — 不再每次 chunk 都调用 `handle.stat()`
+- Perf: `seenToolIDs` LRU 扩容 — 从 5000 提升到 20000，减少高频场景下 tool ID 被淘汰
+- Refactor: `stripNonUserContent` 合并 5 条 replace 为单条正则
+- Refactor: `scheduleTreeRender` 合并到 `scheduleRender`，统一渲染调度
+
 ## 2026-05-24
 
 - Feature: Hook 输出新增 `command` 和 `content` 字段展示 — `command:` 显示 hook 执行的命令路径，`content:` 显示 hook stdin 输入（仅在非空且与 stdout 不同时展示），`stdout:` 显示 hook 进程标准输出

@@ -23,19 +23,19 @@ USAGE:
 
 OPTIONS:
     -p, --port <port>    HTTP port (default: 23000)
-    -h, --host <host>    Bind host (default: 127.0.0.1)
+    --host <host>    Bind host (default: 127.0.0.1)
     -s <ID>     Watch a specific session by ID
     -n          Start from newest (skip history, live only)
     -l [N]      List recent sessions (default 10) and exit
     -a [N]      List active sessions (default all) and exit
-    -w <dur>    Active window duration (default 5m, e.g. 30s, 2m, 10m)
+    -w <dur>    Active window duration (default 24h, e.g. 30s, 2m, 10m)
     -m <N>      Max sessions to show in tree (default 0=unlimited)
     -c <dur>    Auto-collapse sessions inactive for this duration (e.g. 2m)
     -D          Debug: show raw type:subtype for every JSONL line we'd drop
     --poll <ms> Polling interval in milliseconds (default: 500)
     --no-open  Do not auto-open browser on start
     -v          Show version
-    --help      Show this help
+    -h, --help      Show this help
 
 ENVIRONMENT:
     CLAUDE_HOME     Override Claude config directory (default: ~/.claude)
@@ -80,13 +80,17 @@ function checkForUpdate() {
       console.log(`\n  New version available: v${latest} (current: v${VERSION})`);
       console.log('  Updating in background...\n');
       const child = cp.spawn('npm', ['install', '-g', 'claude-code-watch@latest'], {
-        stdio: 'ignore',
+        stdio: ['ignore', 'ignore', 'pipe'],
         detached: true,
       });
+      let stderr = '';
+      child.stderr.on('data', (d) => { stderr += d; });
       child.unref();
       child.on('exit', (code) => {
         if (code === 0) {
           console.log(`  Updated to v${latest}. Changes take effect on next start.\n`);
+        } else {
+          console.error(`  Update failed (exit code ${code}): ${stderr.trim()}\n`);
         }
       });
     }
@@ -168,7 +172,6 @@ async function main() {
         options.port = pv;
         break;
       }
-      case '-h':
       case '--host':
         if (i + 1 >= args.length || args[i + 1].startsWith('-')) {
           console.error(`Error: ${arg} requires a host address`);
@@ -219,6 +222,7 @@ async function main() {
       case '-v':
         showVersion = true;
         break;
+      case '-h':
       case '--help':
         showHelp = true;
         break;

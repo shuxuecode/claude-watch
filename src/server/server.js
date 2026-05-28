@@ -41,6 +41,7 @@ class DashboardServer {
     this.server = null;
     this.wss = null;
     this._heartbeatTimer = null;
+    this._allowedPrefix = null;
 
     setDebugAll(options.debugAll || false);
     this.debugAll = options.debugAll || false;
@@ -48,6 +49,14 @@ class DashboardServer {
 
   getCtxKey(sessionID, agentID) {
     return sessionID + ':' + (agentID || '');
+  }
+
+  async _getAllowedPrefix() {
+    if (!this._allowedPrefix) {
+      const homeReal = await fs.promises.realpath(os.homedir());
+      this._allowedPrefix = path.join(homeReal, '.claude', 'projects');
+    }
+    return this._allowedPrefix;
   }
 
   itemTime(item) {
@@ -207,8 +216,7 @@ class DashboardServer {
       let realPath;
       let allowedPrefix;
       try {
-        const homeReal = await fs.promises.realpath(os.homedir());
-        allowedPrefix = path.join(homeReal, '.claude', 'projects');
+        allowedPrefix = await this._getAllowedPrefix();
         realPath = await fs.promises.realpath(resolved);
         if (!realPath.startsWith(allowedPrefix)) {
           this.sendJSON(res, { error: 'Access denied' }, 403);
@@ -302,9 +310,20 @@ class DashboardServer {
         isComplete: t.isComplete,
       })),
     }));
+    // Compute last activity per agent from itemBuffer (handles skipped history)
+    const lastActivities = {};
+    for (const item of this.itemBuffer) {
+      const actKey = item.sessionID + ':' + (item.agentID || '');
+      if (item.type === 'user_text') {
+        lastActivities[actKey] = { toolName: '', content: (item.content || '').slice(0, 200) };
+      } else if (item.type === 'tool_input' && item.agentID) {
+        lastActivities[actKey] = { toolName: item.toolName || '', content: (item.content || '').slice(0, 200) };
+      }
+    }
     this.send(ws, 'snapshot', {
       sessions,
       autoDiscovery: this.watcher.isAutoDiscoveryEnabled(),
+      lastActivities,
     });
   }
 
@@ -330,6 +349,7 @@ class DashboardServer {
       }
     });
 
+    const FLUSH_BATCH_LIMIT = 50;
     w.on('item', (item) => {
       this.itemBuffer.push(item);
       if (this.itemBuffer.length > MAX_ITEM_BUFFER) {
@@ -337,7 +357,13 @@ class DashboardServer {
       }
       this.updateContext(item);
       this._pendingItems.push(item);
-      if (!this._flushTimer) {
+      if (this._pendingItems.length >= FLUSH_BATCH_LIMIT) {
+        // Batch size hit limit — flush immediately
+        if (this._flushTimer) { clearTimeout(this._flushTimer); this._flushTimer = null; }
+        const batch = this._pendingItems;
+        this._pendingItems = [];
+        this.broadcast('itemBatch', batch);
+      } else if (!this._flushTimer) {
         this._flushTimer = setTimeout(() => {
           this._flushTimer = null;
           const batch = this._pendingItems;

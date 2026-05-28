@@ -170,12 +170,14 @@ body {
   cursor: pointer; white-space: nowrap; gap: 4px;
   overflow: hidden;
 }
-.tree-prefix { color: var(--dim); font-size: 12px; flex-shrink: 0; letter-spacing: 0; font-family: monospace; }
+.tree-prefix { color: var(--dim); font-size: 12px; flex-shrink: 0; letter-spacing: 0; font-family: monospace; white-space: pre; }
 .tree-activity {
-  font-size: 10px; color: var(--dim); white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis;
-  padding: 0 2px 2px; line-height: 1.2;
-  cursor: pointer;
+  font-size: 10px; color: var(--dim); white-space: pre;
+  overflow: hidden; line-height: 1.2;
+  padding: 0 2px 2px; cursor: pointer;
+}
+.tree-activity .act-text {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .tree-node .ctx-pct { font-size: 10px; margin-left: 4px; flex-shrink: 0; }
 .tree-node .ctx-pct.warn { color: var(--yellow); }
@@ -184,6 +186,11 @@ body {
 .tree-node .active-dot.on { color: var(--green); text-shadow: 0 0 6px var(--green); }
 .tree-node .active-dot.off { color: #555; opacity: 1; }
 
+.tree-node .session-prefix {
+  background: rgba(255,255,255,0.08);
+  padding: 0 3px; border-radius: 3px; flex-shrink: 0; font-family: monospace;
+  letter-spacing: 0.5px; vertical-align: middle; font-weight: 600;
+}
 .tree-actions { display: none; gap: 2px; padding-right: 4px; }
 .tree-row:hover .tree-actions { display: flex; }
 .tree-row.selected>.tree-actions { display: flex; }
@@ -257,6 +264,8 @@ body {
 .code-block-wrapper { margin: 8px 0; border-radius: 6px; overflow: hidden; border: 1px solid var(--border); }
 .code-block-header { display: flex; align-items: center; justify-content: space-between; padding: 4px 12px; background: var(--bg3); font-size: 11px; color: var(--dim); }
 .code-block-header .lang-tag { color: var(--blue); font-weight: bold; }
+.code-block-header .copy-btn { cursor: pointer; opacity: 0.5; transition: opacity 0.2s; font-size: 11px; }
+.code-block-header .copy-btn:hover { opacity: 1; }
 .code-block-wrapper pre { margin: 0; padding: 12px; overflow-x: auto; font-size: 12px; line-height: 1.5; }
 .code-block-wrapper pre code { font-family: 'SF Mono', 'Menlo', 'Monaco', 'Consolas', monospace; font-size: 12px; }
 
@@ -377,12 +386,13 @@ class LRUCache {
   get(key) { if (!this.map.has(key)) return undefined; const v = this.map.get(key); this.map.delete(key); this.map.set(key, v); return v; }
   set(key, val) { if (this.map.has(key)) this.map.delete(key); this.map.set(key, val); if (this.map.size > this.max) { const oldest = this.map.keys().next().value; this.map.delete(oldest); } }
 }
-const seenToolIDs = new LRUCache(5000);
+const seenToolIDs = new LRUCache(20000);
 const toolNameMap = new LRUCache(2000);
 const agentActivity = new Map();  // "sessionID:agentID" → { toolName, content }
 const taskDescriptions = new Map(); // toolID → description string
 const MAX_DESC_STORE = 200;
 let filters = new Map();
+let visibleFilterCount = 0;
 
 let showThinking = true;
 let showToolInput = true;
@@ -392,6 +402,25 @@ let showHook = true;
 let showActivity = true;
 let autoDiscovery = true;
 let appVersion = '';
+
+const HIDDEN_KEY = 'claude-watch-hidden';
+function loadHiddenSessions() {
+  try {
+    const data = JSON.parse(localStorage.getItem(HIDDEN_KEY) || '{}');
+    const now = Date.now();
+    for (const [id, ts] of Object.entries(data)) {
+      if (now - ts < 24 * 60 * 60 * 1000) hiddenSessionIDs.add(id);
+    }
+    _saveHiddenSessions();
+  } catch {}
+}
+function _saveHiddenSessions() {
+  const data = {};
+  for (const id of hiddenSessionIDs) data[id] = Date.now();
+  localStorage.setItem(HIDDEN_KEY, JSON.stringify(data));
+}
+const hiddenSessionIDs = new Set();
+loadHiddenSessions();
 
 let renderPending = false;
 
@@ -416,6 +445,8 @@ const MAX_ITEMS = 9999;
 const MAX_LINES = 50;
 let renderedItemCount = 0;
 let needsFullRender = true;
+let treeDirty = true;
+let lastTreeCursor = -1;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Markdown renderer (marked + highlight.js)
@@ -438,11 +469,21 @@ mdRenderer.code = function (codeOrObj, langOrEsc) {
   }
   const langTag = lang ? `<span class="lang-tag">${esc(lang)}</span>` : '';
   return `<div class="code-block-wrapper">
-    <div class="code-block-header">${langTag}<span></span></div>
+    <div class="code-block-header">${langTag}<span class="copy-btn" onclick="copyCode(this)">&#x2398;</span></div>
     <pre><code>${highlighted}</code></pre>
   </div>`;
 };
 marked.setOptions({ renderer: mdRenderer, breaks: true, gfm: true });
+
+function copyCode(btn) {
+  const wrapper = btn.closest('.code-block-wrapper');
+  const code = wrapper ? wrapper.querySelector('code') : null;
+  if (!code) return;
+  navigator.clipboard.writeText(code.textContent).then(() => {
+    btn.innerHTML = '&#x2713;';
+    setTimeout(() => { btn.innerHTML = '&#x2398;'; }, 1500);
+  });
+}
 
 function mdRender(text) {
   try {
@@ -516,7 +557,7 @@ function handleMessage(msg) {
     case 'newBackgroundTask': handleNewBgTask(msg.payload); break;
     case 'sessionRemoved': handleSessionRemoved(msg.payload); break;
     case 'autoDiscoveryChanged': autoDiscovery = msg.payload.enabled; scheduleRender(); break;
-    case 'context': contextData = msg.payload; updateTreeDots(); break;
+    case 'context': contextData = msg.payload; updateTreeDots(); refreshButtons(); break;
     case 'config':
       if (msg.payload.version) appVersion = msg.payload.version;
       if (msg.payload.collapseAfter > 0 && !collapseTimer) {
@@ -538,6 +579,7 @@ function sendCmd(action, extra = {}) {
 function handleSnapshot(payload) {
   autoDiscovery = payload.autoDiscovery;
   for (const s of (payload.sessions || [])) {
+    if (hiddenSessionIDs.has(s.id)) continue;
     let session = sessionsMap.get(s.id);
     if (!session) {
       session = {
@@ -566,21 +608,26 @@ function handleSnapshot(payload) {
       }
     }
   }
+  // Initialize agentActivity from server-computed lastActivities (survives history skip)
+  for (const [key, val] of Object.entries(payload.lastActivities || {})) {
+    agentActivity.set(key, val);
+  }
   updateFilters();
   rebuildNodes();
   needsFullRender = true;
   visibleDirty = true;
-  scheduleTreeRender();
+  // Don't render tree yet — wait for itemBatch to fill title/model/taskDescriptions
 }
 
 function handleNewSession(payload) {
+  if (hiddenSessionIDs.has(payload.sessionID)) return;
   if (sessionsMap.has(payload.sessionID)) return;
   const session = {
     id: payload.sessionID, projectPath: payload.projectPath,
     title: '', folder: folderName(payload.projectPath), model: '',
     agents: [{ id: '', name: 'Main', type: 'main' }],
     tasks: [], collapsed: false, pinned: false,
-    lastActivity: Date.now(),
+    lastActivity: payload.birthtimeMs || Date.now(),
     birthtimeMs: payload.birthtimeMs || 0,
   };
   sessions.push(session);
@@ -589,7 +636,7 @@ function handleNewSession(payload) {
   rebuildNodes();
   needsFullRender = true;
   visibleDirty = true;
-  scheduleTreeRender();
+  scheduleRender();
 }
 
 function handleNewAgent(payload) {
@@ -604,7 +651,7 @@ function handleNewAgent(payload) {
   rebuildNodes();
   needsFullRender = true;
   visibleDirty = true;
-  scheduleTreeRender();
+  scheduleRender();
 }
 
 function handleNewBgTask(payload) {
@@ -616,7 +663,7 @@ function handleNewBgTask(payload) {
     isComplete: payload.isComplete,
   });
   rebuildNodes();
-  scheduleTreeRender();
+  scheduleRender();
 }
 
 function handleSessionRemoved(payload) {
@@ -629,7 +676,7 @@ function handleSessionRemoved(payload) {
   rebuildNodes();
   needsFullRender = true;
   visibleDirty = true;
-  scheduleTreeRender();
+  scheduleRender();
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -645,7 +692,7 @@ function handleItem(item) {
   }
   // Update activity
   const s = sessionsMap.get(item.sessionID);
-  if (s) s.lastActivity = Date.now();
+  if (s) s.lastActivity = itemTime(item);
   pushItem(item);
   scheduleRender();
 }
@@ -658,13 +705,15 @@ function handleItemBatch(items) {
       continue;
     }
     const s = sessionsMap.get(item.sessionID);
-    if (s) s.lastActivity = Date.now();
+    if (s) s.lastActivity = itemTime(item);
     pushItem(item);
   }
+  rebuildNodes();
   scheduleRender();
 }
 
 function pushItem(item) {
+  if (hiddenSessionIDs.has(item.sessionID)) return;
   // Token counts are sourced exclusively from server context messages
   // to avoid divergence between frontend accumulation and server tracking
 
@@ -678,7 +727,6 @@ function pushItem(item) {
   }
 
   if (item.type === 'tool_input') {
-    // Main 代理不追踪工具调用，只显示用户 prompt
     if (item.agentID) {
       agentActivity.set(item.sessionID + ':' + item.agentID, { toolName: item.toolName || '', content: (item.content || '').slice(0, MAX_DESC_STORE) });
     }
@@ -725,20 +773,26 @@ function isItemVisible(item) {
 // Tree
 // ══════════════════════════════════════════════════════════════════════════════
 
+function idColor(rank) {
+  const hue = (rank * 137.508) % 360;
+  return `hsl(${hue}, 75%, 60%)`;
+}
+
 function rebuildNodes() {
   // Sort sessions by creation time, newest first
   sessions.sort((a, b) => (b.birthtimeMs || 0) - (a.birthtimeMs || 0));
+  for (let i = 0; i < sessions.length; i++) sessions[i].colorRank = i;
 
   const today = new Date();
   const todayStr = `${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
 
-  const todaySessions = [];
+  const flatSessions = [];
   const olderByDate = new Map(); // dateStr -> [sessions]
 
   for (const s of sessions) {
     const dateStr = s.birthtimeMs ? formatTime(s.birthtimeMs).split(' ')[0] : null;
-    if (!dateStr || dateStr === todayStr) {
-      todaySessions.push(s);
+    if (!dateStr || dateStr === todayStr || isSessionActive(s)) {
+      flatSessions.push(s);
     } else {
       if (!olderByDate.has(dateStr)) olderByDate.set(dateStr, []);
       olderByDate.get(dateStr).push(s);
@@ -764,7 +818,7 @@ function rebuildNodes() {
       const act = agentActivity.get(actKey);
       treeNodes.push({
         type: a.type, id: a.id, name: a.name, sessionID: s.id,
-        level: 1, isLast: isLastAgent && !hasTasks,
+        level: 1, isLast: isLastAgent,
         activityTool: act ? act.toolName : '',
         activityDesc: act ? act.content : '',
       });
@@ -775,15 +829,16 @@ function rebuildNodes() {
           type: 'task', id: t.id, name: t.toolName,
           sessionID: s.id, parentAgentID: t.parentAgentID,
           outputPath: t.outputPath, isComplete: t.isComplete,
-          level: 2, isLast: isLastAgent && ti === lastTaskIdx,
+          level: 2, isLast: ti === lastTaskIdx,
+          parentIsLast: isLastAgent,
           description: tDesc || '',
         });
       }
     }
   }
 
-  // Today's sessions (expanded)
-  for (const s of todaySessions) {
+  // Today's + active sessions (expanded, not in date folders)
+  for (const s of flatSessions) {
     addSessionWithChildren(s, false);
   }
 
@@ -807,14 +862,13 @@ function rebuildNodes() {
     }
   }
 
-  // Mark last session among today's sessions
-  const todaySessionNodes = treeNodes.filter(n => n.type === 'session' && !n.inFolder);
-  if (todaySessionNodes.length > 0) todaySessionNodes[todaySessionNodes.length - 1].isLast = true;
+  // Mark last session among flat sessions
+  const flatSessionNodes = treeNodes.filter(n => n.type === 'session' && !n.inFolder);
+  if (flatSessionNodes.length > 0) flatSessionNodes[flatSessionNodes.length - 1].isLast = true;
 
   // Mark last session inside each folder
   for (const dateStr of sortedDates) {
     if (folderCollapsed[dateStr] !== false) continue;
-    const folderSessionNodes = treeNodes.filter(n => n.type === 'session' && n.inFolder);
     // Find sessions belonging to this folder
     const thisFolder = [];
     let inThisFolder = false;
@@ -827,19 +881,19 @@ function rebuildNodes() {
   }
 
   if (treeCursor >= treeNodes.length) treeCursor = Math.max(0, treeNodes.length - 1);
+  treeDirty = true;
 }
 
 function treePrefix(node) {
   if (node.level === 0) {
     return node.inFolder ? '    ' : '';
   }
-  const branch = node.isLast ? '└── ' : '├── ';
-  if (node.level === 1) return branch;
-  // Level 2: need to check if parent agent is last
-  const agentNode = treeNodes.find(n => n.sessionID === node.sessionID && (n.type === 'main' || n.type === 'agent') && n.id === (node.parentAgentID || ''));
-  const parentIsLast = agentNode ? agentNode.isLast : true;
-  const stem = parentIsLast ? '    ' : '│   ';
-  return stem + branch;
+  const branch = node.isLast ? '└──' : '├──';
+  if (node.level === 1) return '  ' + branch;
+  // Level 2: use pre-computed parentIsLast from rebuildNodes
+  const parentIsLast = node.parentIsLast !== undefined ? node.parentIsLast : true;
+  const stem = parentIsLast ? '    ' : '│  ';
+  return '  ' + stem + branch;
 }
 
 function getNodeHTML(node, idx) {
@@ -869,7 +923,7 @@ function getNodeHTML(node, idx) {
     return `<div class="tree-row tree-row-session${selClass ? ' selected' : ''}">
       <div class="tree-content" onclick="treeClick(${idx})" data-idx="${idx}">
         <div class="tree-node">
-          <span class="tree-prefix">${treePrefix(node)}</span>${activeDot} ${node.collapsed ? '▸' : '▾'} ${esc(displayName)}
+          <span class="tree-prefix">${treePrefix(node)}</span>${activeDot} ${node.collapsed ? '▸' : '▾'} <span class="session-prefix" style="color:${idColor(node.colorRank)}">${esc(node.id.split('-')[0].toUpperCase())}</span> ${esc(displayName)}
           ${node.collapsed && agentCount > 0 ? `(${esc(String(agentCount))})` : ''}
           ${subInfo}
           ${timeHtml}
@@ -898,8 +952,10 @@ function getNodeHTML(node, idx) {
     const actText = showActivity && (node.activityTool || node.activityDesc)
       ? (node.activityTool && node.activityDesc ? `${node.activityTool}: ${node.activityDesc}` : (node.activityTool || node.activityDesc))
       : '';
+    const indent = treePrefix(node).replace(/[├└]──/, '   ');
+    const actPrefix = `<span class="tree-prefix">${indent}</span>`;
     const activityHTML = actText
-      ? `<div class="tree-activity">${actIcon} ${esc(actText)}</div>`
+      ? `<div class="tree-activity">${actPrefix}<span class="act-text">${actIcon} ${esc(actText)}</span></div>`
       : '';
     return `<div class="tree-row${selClass ? ' selected' : ''}">
       <div class="tree-content${enabled ? '' : ' dim'}" onclick="treeClick(${idx})" data-idx="${idx}">
@@ -917,8 +973,10 @@ function getNodeHTML(node, idx) {
 
   if (node.type === 'task') {
     const icon = node.isComplete ? '✓' : '⏳';
+    const taskIndent = treePrefix(node).replace(/[├└]──/, '   ');
+    const taskPrefix = `<span class="tree-prefix">${taskIndent}</span>`;
     const descHTML = showActivity && node.description
-      ? `<div class="tree-activity">📋 ${esc(node.description)}</div>`
+      ? `<div class="tree-activity">${taskPrefix}<span class="act-text">📋 ${esc(node.description)}</span></div>`
       : '';
     return `<div class="tree-row${selClass ? ' selected' : ''}">
       <div class="tree-content dim" onclick="treeClick(${idx})" data-idx="${idx}">
@@ -942,11 +1000,25 @@ function renderTree() {
     treeCursorInfo.textContent = '';
     return;
   }
-  let html = '';
-  for (let i = 0; i < treeNodes.length; i++) {
-    html += getNodeHTML(treeNodes[i], i);
+
+  const cursorChanged = treeCursor !== lastTreeCursor;
+  if (treeDirty) {
+    let html = '';
+    for (let i = 0; i < treeNodes.length; i++) {
+      html += getNodeHTML(treeNodes[i], i);
+    }
+    treeEl.innerHTML = html;
+    treeDirty = false;
+  } else if (cursorChanged) {
+    const prevSel = treeEl.querySelector('.tree-row.selected');
+    if (prevSel) prevSel.classList.remove('selected');
+    const newContent = treeEl.querySelector('[data-idx="' + treeCursor + '"]');
+    if (newContent) {
+      const row = newContent.closest('.tree-row');
+      if (row) row.classList.add('selected');
+    }
   }
-  treeEl.innerHTML = html;
+  lastTreeCursor = treeCursor;
 
   // Scroll selected into view
   const sel = treeEl.querySelector('.tree-row.selected');
@@ -964,8 +1036,16 @@ function updateTreeDots() {
     const idx = parseInt(content.getAttribute('data-idx'));
     if (isNaN(idx)) continue;
     const node = treeNodes[idx];
-    if (!node || node.type !== 'session') continue;
-    const active = isSessionActive(node);
+    if (!node) continue;
+    let active = false;
+    if (node.type === 'session') {
+      active = isSessionActive(node);
+    } else if (node.type === 'main' || node.type === 'agent') {
+      const ctxKey = node.sessionID + ':' + node.id;
+      const ctx = contextData[ctxKey];
+      const threshold = node.type === 'main' ? 600000 : 180000;
+      active = ctx && (now - ctx.lastActivity < threshold);
+    }
     const newCls = active ? 'active-dot on' : 'active-dot off';
     const newHTML = active ? '🟢' : '⚪';
     if (dot.className !== newCls) {
@@ -976,6 +1056,14 @@ function updateTreeDots() {
 }
 
 const ACTIVE_THRESHOLD = 600000; // 10 minutes
+
+function itemTime(item) {
+  if (item && item.timestamp) {
+    const ts = item.timestamp instanceof Date ? item.timestamp : new Date(item.timestamp);
+    if (!isNaN(ts.getTime())) return ts.getTime();
+  }
+  return Date.now();
+}
 
 function isSessionActive(session) {
   if (!session) return false;
@@ -1017,8 +1105,8 @@ function renderStream() {
     let html;
     if (lines.length > 0) {
       html = lines.map(l => {
-      if (l.html) return `<div class="${l.cls}">${l.text}</div>`;
-      return `<div class="${l.cls}">${esc(l.text)}</div>`;
+      if (l.html) return `<div class="${esc(l.cls)}">${l.text}</div>`;
+      return `<div class="${esc(l.cls)}">${esc(l.text)}</div>`;
     }).join('\n');
     } else if (streamItems.length > 0) {
       html = `<div style="color:#fbbf24;padding:20px;text-align:center">${streamItems.length} items buffered, 0 visible — check toggles or tree selection</div>`;
@@ -1068,15 +1156,18 @@ function renderItem(item) {
   }
 
   const agentName = item.agentName || 'Main';
+  const sForColor = sessionsMap.get(item.sessionID);
+  const prefixTag = `<span class="session-prefix" style="color:${idColor(sForColor ? sForColor.colorRank : 0)}">[${esc(item.sessionID.split('-')[0].toUpperCase())}]</span>`;
+  const agentLabel = prefixTag + ' ' + esc(agentName);
   const tsHtml = item.timestamp ? `<span class="timestamp">${fmtTimestamp(item.timestamp)}</span>` : '';
 
   switch (item.type) {
     case 'thinking':
-      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${esc(agentName + sep + '🧠 Thinking')}</span>${tsHtml}`, html: true });
+      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${agentLabel}${sep}🧠 Thinking</span>${tsHtml}`, html: true });
       for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line thinking', text: l });
       break;
     case 'tool_input':
-      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${esc(agentName + sep + `🔧 ${item.toolName || ''}`)}</span>${tsHtml}`, html: true });
+      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${agentLabel}${sep}🔧 ${esc(item.toolName || '')}</span>${tsHtml}`, html: true });
       for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line tool-input', text: l });
       break;
     case 'tool_output': {
@@ -1086,19 +1177,19 @@ function renderItem(item) {
       }
       let label = tn ? `📤 ${tn} result` : '📤 Output';
       if (item.durationMs > 0) label += ' ' + fmtDur(item.durationMs);
-      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${esc(agentName + sep + label)}</span>${tsHtml}`, html: true });
+      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${agentLabel}${sep}${esc(label)}</span>${tsHtml}`, html: true });
       for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line tool-output', text: l });
       break;
     }
     case 'text':
-      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${esc(agentName + sep + '💬 Response')}</span>${tsHtml}`, html: true });
+      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${agentLabel}${sep}💬 Response</span>${tsHtml}`, html: true });
       lines.push({ cls: 'stream-line text md-content', text: mdRender(item.content), html: true });
       break;
     case 'hook_output': {
       let label = '🪝 Hook';
       if (item.toolName) label += ' ' + item.toolName;
       if (item.durationMs > 0) label += ' ' + fmtDur(item.durationMs);
-      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${esc(agentName + sep + label)}</span>${tsHtml}`, html: true });
+      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${agentLabel}${sep}${esc(label)}</span>${tsHtml}`, html: true });
       if (item.hookCommand) lines.push({ cls: 'stream-line hook', text: `<span class="hook-label">command:</span> ${esc(item.hookCommand)}`, html: true });
       if (item.hookContent) {
         for (const l of truncContent(item.hookContent)) lines.push({ cls: 'stream-line hook', text: `<span class="hook-label">content:</span> ${esc(l)}`, html: true });
@@ -1109,14 +1200,14 @@ function renderItem(item) {
     case 'diagnostics': {
       let label = '⚠ Diagnostics';
       if (item.toolName) label += ' ' + item.toolName;
-      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${esc(agentName + sep + label)}</span>${tsHtml}`, html: true });
+      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${agentLabel}${sep}${esc(label)}</span>${tsHtml}`, html: true });
       for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line diag', text: l });
       break;
     }
     case 'debug': {
       let label = '🔍 Debug';
       if (item.toolName) label += ' ' + item.toolName;
-      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${esc(agentName + sep + label)}</span>${tsHtml}`, html: true });
+      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${agentLabel}${sep}${esc(label)}</span>${tsHtml}`, html: true });
       for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line debug', text: l });
       break;
     }
@@ -1212,7 +1303,10 @@ function toggleNodeVisibility(idx) {
   const node = treeNodes[idx];
   if (!node) return;
   const key = node.sessionID + ':' + node.id;
-  filters.set(key, !filters.get(key));
+  const wasEnabled = filters.get(key);
+  filters.set(key, !wasEnabled);
+  if (wasEnabled) visibleFilterCount--;
+  else visibleFilterCount++;
   renderAll();
 }
 
@@ -1256,6 +1350,7 @@ function soloSelected() {
     updateFilters();
   } else {
     filters.clear();
+    visibleFilterCount = 0;
     if (node.type === 'session') {
       const session = sessions.find(s => s.id === node.id);
       if (session && session.collapsed) {
@@ -1263,9 +1358,13 @@ function soloSelected() {
         session.pinned = true;
         rebuildNodes();
       }
-      for (const a of node.agents) filters.set(node.id + ':' + a.id, true);
+      for (const a of node.agents) {
+        filters.set(node.id + ':' + a.id, true);
+        visibleFilterCount++;
+      }
     } else if (node.type === 'main' || node.type === 'agent') {
       filters.set(node.sessionID + ':' + node.id, true);
+      visibleFilterCount = 1;
     }
   }
   renderAll();
@@ -1273,23 +1372,17 @@ function soloSelected() {
 
 function isSoloed(node) {
   if (node.type === 'session') {
-    for (const s of sessions) {
-      if (s.id === node.id) continue;
-      for (const a of s.agents) {
-        if (filters.get(s.id + ':' + a.id)) return false;
-      }
+    if (visibleFilterCount !== node.agents.length) return false;
+    for (const a of node.agents) {
+      if (!filters.get(node.id + ':' + a.id)) return false;
     }
     return true;
   }
   if (node.type === 'main' || node.type === 'agent') {
     const key = node.sessionID + ':' + node.id;
-    if (!filters.get(key)) return false;
-    for (const s of sessions) {
-      for (const a of s.agents) {
-        if ((s.id + ':' + a.id) !== key && filters.get(s.id + ':' + a.id)) return false;
-      }
-    }
-    return true;
+    return visibleFilterCount === 1 && filters.get(key);
+  }
+  return false;
   }
   return false;
 }
@@ -1307,6 +1400,8 @@ function removeSelectedSession() {
   else sid = node.sessionID;
   if (!sid) return;
   if (!confirm(`Remove session ${sid.slice(0, 12)}...?`)) return;
+  hiddenSessionIDs.add(sid);
+  _saveHiddenSessions();
   const idx = sessions.findIndex(s => s.id === sid);
   if (idx >= 0) {
     sessions.splice(idx, 1);
@@ -1332,7 +1427,7 @@ function toggleText() { showText = !showText; needsFullRender = true;
   visibleDirty = true; renderStream(); refreshButtons(); }
 function toggleHook() { showHook = !showHook; needsFullRender = true;
   visibleDirty = true; renderStream(); refreshButtons(); }
-function toggleActivity() { showActivity = !showActivity; rebuildNodes(); scheduleTreeRender(); refreshButtons(); }
+function toggleActivity() { showActivity = !showActivity; rebuildNodes(); scheduleRender(); refreshButtons(); }
 function toggleAutoScroll() { autoScroll = !autoScroll; if (autoScroll) streamEl.scrollTop = streamEl.scrollHeight; renderAll(); }
 function toggleTree() { showTree = !showTree; document.getElementById('tree-panel').classList.toggle('hidden', !showTree); }
 function toggleAutoDiscovery() { sendCmd('toggleAutoDiscovery'); }
@@ -1406,10 +1501,8 @@ function applyCollapsePolicy(duration) {
 function startActiveRefresh() {
   if (activeRefreshTimer) clearInterval(activeRefreshTimer);
   activeRefreshTimer = setInterval(() => {
-    const prevHTML = treeEl.innerHTML;
-    rebuildNodes();
-    renderTree();
-    if (treeEl.innerHTML !== prevHTML) renderAll();
+    updateTreeDots();
+    refreshButtons();
   }, 15000);
 }
 
@@ -1430,9 +1523,11 @@ streamEl.addEventListener('scroll', () => {
 
 function updateFilters() {
   filters.clear();
+  visibleFilterCount = 0;
   for (const s of sessions) {
     for (const a of s.agents) {
       filters.set(s.id + ':' + a.id, true);
+      visibleFilterCount++;
     }
   }
 }
@@ -1496,17 +1591,6 @@ function renderAll() {
 }
 
 function scheduleRender() {
-  if (!renderPending) {
-    renderPending = true;
-    requestAnimationFrame(() => {
-      renderPending = false;
-      renderStream();
-      refreshButtons();
-    });
-  }
-}
-
-function scheduleTreeRender() {
   if (!renderPending) {
     renderPending = true;
     requestAnimationFrame(() => {
