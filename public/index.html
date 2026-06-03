@@ -92,9 +92,8 @@ body {
 .btn[data-tooltip]:hover::after {
   content: attr(data-tooltip);
   position: absolute;
-  bottom: calc(100% + 5px);
-  left: 50%;
-  transform: translateX(-50%);
+  top: calc(100% + 5px);
+  left: 0;
   background: var(--bg2); color: var(--white);
   padding: 2px 8px; border-radius: 4px;
   font-size: 10px; white-space: nowrap; z-index: 9999;
@@ -185,6 +184,7 @@ body {
 .tree-node .active-dot { flex-shrink: 0; }
 .tree-node .active-dot.on { color: var(--green); text-shadow: 0 0 6px var(--green); }
 .tree-node .active-dot.off { color: #555; opacity: 1; }
+.tree-node .tree-agent-id { font-size: 10px; color: var(--dim); margin-left: 2px; font-family: monospace; }
 
 .tree-node .session-prefix {
   background: rgba(255,255,255,0.08);
@@ -313,10 +313,9 @@ body {
   <div id="tree-panel">
     <div id="tree-resize-handle"></div>
     <div id="tree-toolbar">
-      <button class="btn btn-icon" onclick="selectAll()" data-tooltip="Show all sessions/agents">⊞</button>
-      <button class="btn btn-icon accent" onclick="soloSelected()" data-tooltip="Solo selected">⊙</button>
-      <button class="btn btn-icon danger" onclick="removeSelectedSession()" data-tooltip="Remove session">✕</button>
-      <button class="btn btn-icon on" id="btn-activity" onclick="toggleActivity()" data-tooltip="Toggle activity info">💬</button>
+      <button class="btn btn-icon accent" onclick="soloSelected()" data-tooltip="独显：只看选中项，再点恢复全显">⊙</button>
+      <button class="btn btn-icon danger" onclick="removeSelectedSession()" data-tooltip="移除：隐藏选中会话（24h）">✕</button>
+      <button class="btn btn-icon on" id="btn-activity" onclick="toggleActivity()" data-tooltip="活动：显示/隐藏操作摘要">💬</button>
       <span style="flex:1"></span>
       <span id="tree-cursor-info" style="font-size:10px;color:var(--dim)"></span>
     </div>
@@ -783,6 +782,8 @@ function rebuildNodes() {
   sessions.sort((a, b) => (b.birthtimeMs || 0) - (a.birthtimeMs || 0));
   for (let i = 0; i < sessions.length; i++) sessions[i].colorRank = i;
 
+  computeAgentIdDisplayLengths();
+
   const today = new Date();
   const todayStr = `${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
 
@@ -960,7 +961,7 @@ function getNodeHTML(node, idx) {
     return `<div class="tree-row${selClass ? ' selected' : ''}">
       <div class="tree-content${enabled ? '' : ' dim'}" onclick="treeClick(${idx})" data-idx="${idx}">
         <div class="tree-node">
-          <span class="tree-prefix">${treePrefix(node)}</span>${activeDot} ${icon} ${esc(node.name || '')}${ctxPct}
+          <span class="tree-prefix">${treePrefix(node)}</span>${activeDot} ${icon} ${esc(node.name || '')}${node.type === 'agent' && node.id ? '<span class="tree-agent-id">(' + esc(node.id.slice(0, agentIdDisplayLen.get(node.sessionID + ':' + node.id) || 7)) + ')</span>' : ''}${ctxPct}
         </div>
         ${activityHTML}
       </div>
@@ -1158,7 +1159,8 @@ function renderItem(item) {
   const agentName = item.agentName || 'Main';
   const sForColor = sessionsMap.get(item.sessionID);
   const prefixTag = `<span class="session-prefix" style="color:${idColor(sForColor ? sForColor.colorRank : 0)}">[${esc(item.sessionID.split('-')[0].toUpperCase())}]</span>`;
-  const agentLabel = prefixTag + ' ' + esc(agentName);
+  const agentIdTag = item.agentID ? `<span class="session-prefix" style="color:var(--dim)">(</span><span class="session-prefix" style="color:var(--magenta)">${esc(item.agentID.slice(0, agentIdDisplayLen.get(item.sessionID + ':' + item.agentID) || 7))}</span><span class="session-prefix" style="color:var(--dim)">)</span>` : '';
+  const agentLabel = prefixTag + agentIdTag + ' ' + esc(agentName);
   const tsHtml = item.timestamp ? `<span class="timestamp">${fmtTimestamp(item.timestamp)}</span>` : '';
 
   switch (item.type) {
@@ -1538,6 +1540,28 @@ function agentDisplayName(id, type) {
   }
   if (!id) return 'Main';
   return 'Agent-' + id.slice(0, 7);
+}
+
+// Compute the minimum display length per agentID so that within each session,
+// no two agent IDs share the same truncated prefix. Minimum 7 chars.
+const agentIdDisplayLen = new Map();
+function computeAgentIdDisplayLengths() {
+  agentIdDisplayLen.clear();
+  for (const s of sessions) {
+    const agentIds = s.agents.filter(a => a.id).map(a => a.id);
+    if (agentIds.length === 0) continue;
+    // Find minimum length that makes all prefixes unique
+    let minLen = 7;
+    while (minLen < 21) {
+      const prefixes = agentIds.map(id => id.slice(0, minLen));
+      const unique = new Set(prefixes);
+      if (unique.size === agentIds.length) break;
+      minLen++;
+    }
+    for (const id of agentIds) {
+      agentIdDisplayLen.set(s.id + ':' + id, minLen);
+    }
+  }
 }
 
 function folderName(projectPath) {
