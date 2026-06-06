@@ -39,9 +39,37 @@ async function resolveProjectPath(encoded) {
   let s = encoded;
   if (s.startsWith('-')) s = s.slice(1);
   if (!s) return '';
-  const parts = s.split('-');
 
-  // Try progressively joining segments from the right with dashes
+  // Claude path encoding: '/' → '-', '.' → '-' (extra dash)
+  // So '--' = '/.' (path separator + dot/hidden dir like .claude)
+  // Correct decode: '--' → '/.', then '-' → '/'
+  const directDecoded = s.replace(/--/g, '/.').replace(/-/g, '/');
+
+  // Strategy 1: try direct decoded path on disk (handles dots correctly)
+  try {
+    await fsp.access('/' + directDecoded);
+    _projectPathCache.set(encoded, directDecoded);
+    return directDecoded;
+  } catch {}
+
+  // Strategy 2: progressive join for directory names containing dashes
+  // First, merge '--' empty elements with the next element as dot-prefix directories
+  const rawParts = s.split('-');
+  const parts = [];
+  for (let i = 0; i < rawParts.length; i++) {
+    if (rawParts[i] === '') {
+      // Empty element from '--': combine with next as dot-prefix dir (e.g. ".claude")
+      if (i + 1 < rawParts.length) {
+        parts.push('.' + rawParts[i + 1]);
+        i++;
+      } else {
+        parts.push('.');
+      }
+    } else {
+      parts.push(rawParts[i]);
+    }
+  }
+
   for (let joinFrom = parts.length - 1; joinFrom >= 1; joinFrom--) {
     const pathPart = parts.slice(0, joinFrom).join('/');
     const dirPart = parts.slice(joinFrom).join('-');
@@ -56,10 +84,9 @@ async function resolveProjectPath(encoded) {
     }
   }
 
-  // Fallback to naive conversion
-  const result = s.replace(/-/g, '/');
-  _projectPathCache.set(encoded, result);
-  return result;
+  // Fallback: return direct decoded path (correct even if path no longer exists on disk)
+  _projectPathCache.set(encoded, directDecoded);
+  return directDecoded;
 }
 
 function isMainSessionFile(filePath, stats) {

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-06
+
+### Bug 修复
+
+- Fix: `resolveProjectPath` 未正确处理 Claude 路径编码中的 `--`（点号编码）— 旧代码 `split('-')` 将 `--` 拆为空元素导致 progressive join 产生含 `//` 的无效路径，fallback naive 转换把所有 `-` 替换为 `/` 产出错误路径如 `Users/eleme//claude/`，使得树面板对 `.claude` 等隐藏目录下的会话显示无意义名称（如 "sessions"、"skills"）。修复后采用三层策略：直接解码优先（`--→/.`, `-→/`）；渐进合并兜底（空元素合并为点前缀目录）；fallback 返回直接解码结果。
+
 ## 2026-05-28
 
 ### 新功能
