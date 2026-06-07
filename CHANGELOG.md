@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-07
+
+### 新功能
+
+- Feature: HTML 导出 — 工具栏新增 💾 导出按钮，可将当前会话流导出为自包含 HTML 文件。导出文件内嵌完整 CSS（页面样式 + highlight.js 主题）、session 列表头部（项目名/模型/session ID）、token 统计、当前 filter 状态、导出时间戳，并支持按 session 点击筛选浏览。文件名格式为 `claude-watch-{PREFIX}-{TIMESTAMP}.html`
+- Feature: Stream 渲染行添加 `data-session-id` 属性 — 每条 stream 行（thinking/tool_input/tool_output/text/hook/diagnostics/marker/separator 等）携带所属 session ID，为按 session 过滤和导出筛选提供数据基础
+
 ## 2026-06-06
 
 ### Bug 修复

@@ -302,6 +302,7 @@ body {
   <span class="sep">│</span>
   <span id="session-info">Connecting...</span>
   <div class="auto">
+    <button class="btn btn-icon" id="btn-export" onclick="exportHTML()" data-tooltip="导出 HTML">💾</button>
     <button class="btn btn-icon" id="btn-theme" onclick="toggleTheme()" data-tooltip="Toggle theme">🌙</button>
     <button class="btn on" id="btn-autodisco" onclick="toggleAutoDiscovery()" data-tooltip="Auto-discover">🔍 Auto</button>
     <span class="sep">│</span>
@@ -446,6 +447,11 @@ let renderedItemCount = 0;
 let needsFullRender = true;
 let treeDirty = true;
 let lastTreeCursor = -1;
+
+// Cache highlight.js CSS for HTML export
+let hljsDarkCSS = '', hljsLightCSS = '';
+fetch('vendor/github-dark.min.css').then(r => r.text()).then(t => { hljsDarkCSS = t; }).catch(() => {});
+fetch('vendor/github-light.min.css').then(r => r.text()).then(t => { hljsLightCSS = t; }).catch(() => {});
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Markdown renderer (marked + highlight.js)
@@ -1106,8 +1112,9 @@ function renderStream() {
     let html;
     if (lines.length > 0) {
       html = lines.map(l => {
-      if (l.html) return `<div class="${esc(l.cls)}">${l.text}</div>`;
-      return `<div class="${esc(l.cls)}">${esc(l.text)}</div>`;
+      const sidAttr = l.sessionID ? ` data-session-id="${esc(l.sessionID)}"` : '';
+      if (l.html) return `<div class="${esc(l.cls)}"${sidAttr}>${l.text}</div>`;
+      return `<div class="${esc(l.cls)}"${sidAttr}>${esc(l.text)}</div>`;
     }).join('\n');
     } else if (streamItems.length > 0) {
       html = `<div style="color:#fbbf24;padding:20px;text-align:center">${streamItems.length} items buffered, 0 visible — check toggles or tree selection</div>`;
@@ -1125,6 +1132,7 @@ function renderStream() {
       for (const l of renderItem(visible[i])) {
         const div = document.createElement('div');
         div.className = l.cls;
+        if (l.sessionID) div.dataset.sessionId = l.sessionID;
         div.innerHTML = l.html ? l.text : esc(l.text);
         streamEl.appendChild(div);
       }
@@ -1144,16 +1152,17 @@ function renderItem(item) {
   const isSub = !!item.agentID;
   const agentTagCls = 'stream-line ' + (isSub ? 'agent-sub agent-tag' : 'agent-main agent-tag');
   const sep = ' » ';
+  const sid = item.sessionID || '';
 
   if (item.type === 'turn_marker') {
-    return [{ cls: 'stream-line marker', text: `── turn ended ${fmtDur(item.durationMs)} ──` }];
+    return [{ cls: 'stream-line marker', text: `── turn ended ${fmtDur(item.durationMs)} ──`, sessionID: sid }];
   }
   if (item.type === 'compact_marker') {
     const label = item.content ? `compacted (${item.content})` : 'compacted';
-    return [{ cls: 'stream-line marker', text: `── ${label} ──` }];
+    return [{ cls: 'stream-line marker', text: `── ${label} ──`, sessionID: sid }];
   }
   if (item.type === 'pr_link') {
-    return [{ cls: 'stream-line marker', text: `── ${item.content} ──` }];
+    return [{ cls: 'stream-line marker', text: `── ${item.content} ──`, sessionID: sid }];
   }
 
   const agentName = item.agentName || 'Main';
@@ -1165,12 +1174,12 @@ function renderItem(item) {
 
   switch (item.type) {
     case 'thinking':
-      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${agentLabel}${sep}🧠 Thinking</span>${tsHtml}`, html: true });
-      for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line thinking', text: l });
+      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${agentLabel}${sep}🧠 Thinking</span>${tsHtml}`, html: true, sessionID: sid });
+      for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line thinking', text: l, sessionID: sid });
       break;
     case 'tool_input':
-      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${agentLabel}${sep}🔧 ${esc(item.toolName || '')}</span>${tsHtml}`, html: true });
-      for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line tool-input', text: l });
+      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${agentLabel}${sep}🔧 ${esc(item.toolName || '')}</span>${tsHtml}`, html: true, sessionID: sid });
+      for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line tool-input', text: l, sessionID: sid });
       break;
     case 'tool_output': {
       let tn = '';
@@ -1179,43 +1188,43 @@ function renderItem(item) {
       }
       let label = tn ? `📤 ${tn} result` : '📤 Output';
       if (item.durationMs > 0) label += ' ' + fmtDur(item.durationMs);
-      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${agentLabel}${sep}${esc(label)}</span>${tsHtml}`, html: true });
-      for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line tool-output', text: l });
+      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${agentLabel}${sep}${esc(label)}</span>${tsHtml}`, html: true, sessionID: sid });
+      for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line tool-output', text: l, sessionID: sid });
       break;
     }
     case 'text':
-      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${agentLabel}${sep}💬 Response</span>${tsHtml}`, html: true });
-      lines.push({ cls: 'stream-line text md-content', text: mdRender(item.content), html: true });
+      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${agentLabel}${sep}💬 Response</span>${tsHtml}`, html: true, sessionID: sid });
+      lines.push({ cls: 'stream-line text md-content', text: mdRender(item.content), html: true, sessionID: sid });
       break;
     case 'hook_output': {
       let label = '🪝 Hook';
       if (item.toolName) label += ' ' + item.toolName;
       if (item.durationMs > 0) label += ' ' + fmtDur(item.durationMs);
-      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${agentLabel}${sep}${esc(label)}</span>${tsHtml}`, html: true });
-      if (item.hookCommand) lines.push({ cls: 'stream-line hook', text: `<span class="hook-label">command:</span> ${esc(item.hookCommand)}`, html: true });
+      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${agentLabel}${sep}${esc(label)}</span>${tsHtml}`, html: true, sessionID: sid });
+      if (item.hookCommand) lines.push({ cls: 'stream-line hook', text: `<span class="hook-label">command:</span> ${esc(item.hookCommand)}`, html: true, sessionID: sid });
       if (item.hookContent) {
-        for (const l of truncContent(item.hookContent)) lines.push({ cls: 'stream-line hook', text: `<span class="hook-label">content:</span> ${esc(l)}`, html: true });
+        for (const l of truncContent(item.hookContent)) lines.push({ cls: 'stream-line hook', text: `<span class="hook-label">content:</span> ${esc(l)}`, html: true, sessionID: sid });
       }
-      for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line hook', text: `<span class="hook-label">stdout:</span> ${esc(l)}`, html: true });
+      for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line hook', text: `<span class="hook-label">stdout:</span> ${esc(l)}`, html: true, sessionID: sid });
       break;
     }
     case 'diagnostics': {
       let label = '⚠ Diagnostics';
       if (item.toolName) label += ' ' + item.toolName;
-      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${agentLabel}${sep}${esc(label)}</span>${tsHtml}`, html: true });
-      for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line diag', text: l });
+      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${agentLabel}${sep}${esc(label)}</span>${tsHtml}`, html: true, sessionID: sid });
+      for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line diag', text: l, sessionID: sid });
       break;
     }
     case 'debug': {
       let label = '🔍 Debug';
       if (item.toolName) label += ' ' + item.toolName;
-      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${agentLabel}${sep}${esc(label)}</span>${tsHtml}`, html: true });
-      for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line debug', text: l });
+      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${agentLabel}${sep}${esc(label)}</span>${tsHtml}`, html: true, sessionID: sid });
+      for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line debug', text: l, sessionID: sid });
       break;
     }
   }
 
-  lines.push({ cls: 'stream-line separator', text: '─'.repeat(60) });
+  lines.push({ cls: 'stream-line separator', text: '─'.repeat(60), sessionID: sid });
   return lines;
 }
 
@@ -1622,6 +1631,169 @@ function scheduleRender() {
       refreshButtons();
     });
   }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Export HTML
+// ══════════════════════════════════════════════════════════════════════════════
+
+function exportHTML() {
+  const theme = document.documentElement.getAttribute('data-theme') || 'dark';
+
+  // Collect unique sessions from visible items
+  const sidsInExport = new Set();
+  for (const item of visibleItems) {
+    if (item.sessionID) sidsInExport.add(item.sessionID);
+  }
+  const exportSessions = [];
+  for (const sid of sidsInExport) {
+    const s = sessionsMap.get(sid);
+    if (s) exportSessions.push(s);
+  }
+  // Sort by colorRank to match the order in the tree
+  exportSessions.sort((a, b) => (a.colorRank || 0) - (b.colorRank || 0));
+
+  // Build session list header
+  let sessionListHTML = '';
+  if (exportSessions.length > 0) {
+    const items = exportSessions.map(s => {
+      const color = idColor(s.colorRank || 0);
+      const project = folderName(s.projectPath) || s.projectPath || '';
+      const model = s.model || '';
+      return `<div class="export-session-item" data-sid="${esc(s.id)}" onclick="filterBySession('${esc(s.id)}')"><div class="export-item-top"><span class="export-project">${esc(project)}</span>${model ? ` <span class="export-model" style="color:var(--dim)">${esc(model)}</span>` : ''}</div><div class="export-item-sid" style="color:${color}">${esc(s.id)}</div></div>`;
+    }).join('\n');
+    sessionListHTML = `<div class="export-session-list">
+<div class="export-session-item export-all-btn active" onclick="filterBySession(null)">全部</div>
+${items}
+</div>`;
+  }
+
+  // Token info
+  computeTokensFromContext();
+  let tokenHTML = '';
+  if (totalInput > 0 || totalOutput > 0) {
+    let tokStr = `Input: ${fmtTok(totalInput)} · Output: ${fmtTok(totalOutput)}`;
+    if (totalCacheCreate > 0 || totalCacheRead > 0) tokStr += ` · Cache: ${fmtTok(totalCacheCreate)}+${fmtTok(totalCacheRead)}`;
+    tokenHTML = `<div class="export-meta-line" style="color:var(--dim)">Tokens: ${tokStr}</div>`;
+  }
+
+  // Filter state
+  const filterState = [];
+  if (!showThinking) filterState.push('thinking hidden');
+  if (!showToolInput) filterState.push('tools hidden');
+  if (!showToolOutput) filterState.push('output hidden');
+  if (!showText) filterState.push('text hidden');
+  if (!showHook) filterState.push('hook hidden');
+  let filterHTML = '';
+  if (filterState.length > 0) filterHTML = `<div class="export-meta-line" style="color:var(--dim)">Filters: ${filterState.join(', ')}</div>`;
+
+  // Export timestamp
+  const now = new Date();
+  const exportTime = fmtTimestamp(now);
+  const timeHTML = `<div class="export-meta-line" style="color:var(--dim)">Exported: ${exportTime}</div>`;
+
+  // Clone stream content and strip interactive elements
+  const clone = streamEl.cloneNode(true);
+  clone.querySelectorAll('.copy-btn').forEach(el => el.remove());
+  clone.querySelectorAll('[onclick]').forEach(el => el.removeAttribute('onclick'));
+
+  // Get the cleaned innerHTML
+  const streamHTML = clone.innerHTML;
+
+  // Get page CSS
+  const pageStyleEl = document.querySelector('style');
+  const appCSS = pageStyleEl ? pageStyleEl.textContent : '';
+
+  // Get highlight.js CSS from cache
+  const hlCSS = theme === 'dark' ? hljsDarkCSS : hljsLightCSS;
+
+  // Export-specific CSS
+  const exportCSS = `
+.export-session-list { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 0; }
+.export-session-item { cursor: pointer; padding: 6px 8px; border-radius: 4px; border: 1px solid var(--border); opacity: 0.7; transition: all 0.15s; font-size: 12px; display: flex; flex-direction: column; gap: 2px; }
+.export-session-item:hover { opacity: 1; border-color: var(--dim); }
+.export-session-item.active { opacity: 1; border-color: var(--purple); background: var(--purple); color: var(--white); }
+.export-all-btn { font-weight: 600; align-items: center; }
+.export-item-top { display: flex; align-items: baseline; gap: 4px; }
+.export-item-sid { font-family: monospace; font-size: 10px; opacity: 0.8; }
+.export-session-item.active .export-item-sid { opacity: 1; color: var(--white); }
+.export-project { font-weight: 500; }
+.export-model { font-size: 11px; }
+.export-meta-line { padding: 2px 0; font-size: 11px; }
+.export-header { padding: 12px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg); z-index: 100; }
+.export-header h1 { margin: 0 0 4px 0; font-size: 16px; color: var(--white); }
+`;
+
+  // Export-specific JS for session filtering
+  const exportJS = `
+let _activeSid = null;
+function filterBySession(sid) {
+  _activeSid = sid;
+  const lines = document.querySelectorAll('#export-stream [data-session-id]');
+  lines.forEach(el => {
+    el.style.display = (sid === null || el.dataset.sessionId === sid) ? '' : 'none';
+  });
+  document.querySelectorAll('.export-session-item[data-sid]').forEach(el => {
+    el.classList.toggle('active', sid !== null && el.dataset.sid === sid);
+  });
+  document.querySelector('.export-all-btn').classList.toggle('active', sid === null);
+}
+`;
+
+  // Assemble complete HTML document
+  const htmlAttrs = theme === 'light' ? ' lang="en" data-theme="light"' : ' lang="en"';
+  const fullDoc = `<!DOCTYPE html>
+<html${htmlAttrs}>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>claude-watch Export</title>
+<style>
+${appCSS}
+${hlCSS}
+${exportCSS}
+</style>
+</head>
+<body style="overflow-y:auto;height:auto">
+<div class="export-header">
+<h1>claude-watch Export</h1>
+${sessionListHTML}
+${tokenHTML}
+${filterHTML}
+${timeHTML}
+</div>
+<div id="export-stream" style="padding:8px 12px;font-size:12px">
+${streamHTML}
+</div>
+<script>${exportJS}<\/script>
+</body>
+</html>`;
+
+  // Blob download
+  const blob = new Blob([fullDoc], { type: 'text/html;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+
+  let filePrefix;
+  if (sidsInExport.size === 1) {
+    filePrefix = [...sidsInExport][0].split('-')[0].toUpperCase();
+  } else {
+    filePrefix = 'multi';
+  }
+  const pad = (n, len) => String(n).padStart(len, '0');
+  const ts = `${pad(now.getFullYear(),4)}${pad(now.getMonth()+1,2)}${pad(now.getDate(),2)}-${pad(now.getHours(),2)}${pad(now.getMinutes(),2)}${pad(now.getSeconds(),2)}`;
+  a.download = `claude-watch-${filePrefix}-${ts}.html`;
+  a.href = url;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+
+  // Visual feedback
+  const btn = document.getElementById('btn-export');
+  const orig = btn.textContent;
+  btn.textContent = '✓';
+  setTimeout(() => { btn.textContent = orig; }, 2000);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

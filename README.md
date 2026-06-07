@@ -18,6 +18,7 @@ Claude Code writes detailed JSONL logs under `~/.claude/projects/` as it works �
 - **Token & cost visibility** — tracks input/output/cache tokens per agent, with context window utilization
 - **Filter controls** — toggle thinking, tool input, tool output, hook output, and text visibility independently
 - **Auto-discovery** — automatically picks up new sessions as they start (toggleable)
+- **HTML export** — export the current stream as a self-contained HTML file with embedded session list, token stats, filter state, and per-session filtering
 
 ## Quick Start
 

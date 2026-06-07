@@ -28,6 +28,7 @@ Claude Code 在运行时会将详细的 JSONL 日志写入 `~/.claude/projects/`
 - **Token/成本追踪** — 每个代理的输入/输出/缓存 token 及上下文窗口利用率
 - **过滤控制** — 独立切换 thinking、工具输入/输出、hook 输出、文本的可见性
 - **自动发现** — 新会话启动时自动纳入监控
+- **HTML 导出** — 将当前会话流导出为自包含 HTML 文件，内嵌 session 列表、token 统计、filter 状态，并支持按 session 筛选浏览
 
 ## 致谢
 
