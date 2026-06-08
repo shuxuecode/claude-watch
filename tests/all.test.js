@@ -711,6 +711,163 @@ describe('agentDisplayName', () => {
   });
 });
 
+// ============================================================================
+// contextWindowFor — fallback for unknown model versions (#7)
+// ============================================================================
+
+describe('contextWindowFor fallback', () => {
+  it('should return 1M for future opus models via series fallback', () => {
+    assert.strictEqual(contextWindowFor('claude-opus-5-0'), 1000000);
+    assert.strictEqual(contextWindowFor('claude-opus-4-8'), 1000000);
+  });
+
+  it('should return 1M for future sonnet models via series fallback', () => {
+    assert.strictEqual(contextWindowFor('claude-sonnet-5-0'), 1000000);
+    assert.strictEqual(contextWindowFor('claude-sonnet-4-8'), 1000000);
+  });
+
+  it('should return 200k for haiku models (no 1M fallback)', () => {
+    assert.strictEqual(contextWindowFor('claude-haiku-5-0'), 200000);
+  });
+
+  it('should return 200k for completely unknown models', () => {
+    assert.strictEqual(contextWindowFor('gpt-4o'), 200000);
+    assert.strictEqual(contextWindowFor(''), 200000);
+    assert.strictEqual(contextWindowFor(null), 200000);
+    assert.strictEqual(contextWindowFor(undefined), 200000);
+  });
+
+  it('should match exact known models from lookup table', () => {
+    assert.strictEqual(contextWindowFor('claude-opus-4-6'), 200000);
+    assert.strictEqual(contextWindowFor('claude-sonnet-4-5'), 200000);
+  });
+});
+
+// ============================================================================
+// LRUCache (extracted from frontend index.html) (#1)
+// ============================================================================
+
+describe('LRUCache', () => {
+  class LRUCache {
+    constructor(max) { this.max = max; this.map = new Map(); }
+    has(key) { if (!this.map.has(key)) return false; const v = this.map.get(key); this.map.delete(key); this.map.set(key, v); return true; }
+    get(key) { if (!this.map.has(key)) return undefined; const v = this.map.get(key); this.map.delete(key); this.map.set(key, v); return v; }
+    set(key, val) { if (this.map.has(key)) this.map.delete(key); this.map.set(key, val); if (this.map.size > this.max) { const oldest = this.map.keys().next().value; this.map.delete(oldest); } }
+    delete(key) { return this.map.delete(key); }
+    keys() { return this.map.keys(); }
+  }
+
+  it('should store and retrieve values', () => {
+    const c = new LRUCache(3);
+    c.set('a', 1);
+    c.set('b', 2);
+    assert.strictEqual(c.get('a'), 1);
+    assert.strictEqual(c.get('b'), 2);
+    assert.strictEqual(c.has('a'), true);
+    assert.strictEqual(c.has('c'), false);
+  });
+
+  it('should return undefined for missing keys', () => {
+    const c = new LRUCache(3);
+    assert.strictEqual(c.get('x'), undefined);
+  });
+
+  it('should evict oldest entry when over capacity', () => {
+    const c = new LRUCache(3);
+    c.set('a', 1);
+    c.set('b', 2);
+    c.set('c', 3);
+    c.set('d', 4);
+    assert.strictEqual(c.get('a'), undefined);
+    assert.strictEqual(c.get('b'), 2);
+    assert.strictEqual(c.get('d'), 4);
+  });
+
+  it('should promote accessed keys (LRU order)', () => {
+    const c = new LRUCache(3);
+    c.set('a', 1);
+    c.set('b', 2);
+    c.set('c', 3);
+    c.get('a');
+    c.set('d', 4);
+    assert.strictEqual(c.get('a'), 1);
+    assert.strictEqual(c.get('b'), undefined);
+  });
+
+  it('should promote keys on has() check', () => {
+    const c = new LRUCache(2);
+    c.set('a', 1);
+    c.set('b', 2);
+    c.has('a');
+    c.set('c', 3);
+    assert.strictEqual(c.has('a'), true);
+    assert.strictEqual(c.has('b'), false);
+  });
+
+  it('should update existing key without growing size', () => {
+    const c = new LRUCache(2);
+    c.set('a', 1);
+    c.set('b', 2);
+    c.set('a', 10);
+    assert.strictEqual(c.get('a'), 10);
+    assert.strictEqual(c.map.size, 2);
+  });
+
+  it('should support delete()', () => {
+    const c = new LRUCache(3);
+    c.set('a', 1);
+    c.set('b', 2);
+    assert.strictEqual(c.delete('a'), true);
+    assert.strictEqual(c.get('a'), undefined);
+    assert.strictEqual(c.delete('nonexistent'), false);
+  });
+
+  it('should support keys() iterator', () => {
+    const c = new LRUCache(3);
+    c.set('a', 1);
+    c.set('b', 2);
+    const keys = [...c.keys()];
+    assert.deepStrictEqual(keys, ['a', 'b']);
+  });
+});
+
+// ============================================================================
+// esc() function — XSS defense (#5)
+// ============================================================================
+
+describe('esc (HTML escape)', () => {
+  function esc(s) {
+    return (s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;').replace(/\\/g, '&#x5C;');
+  }
+
+  it('should escape HTML special characters', () => {
+    assert.strictEqual(esc('<script>alert(1)</script>'), '&lt;script&gt;alert(1)&lt;/script&gt;');
+  });
+
+  it('should escape quotes', () => {
+    assert.strictEqual(esc('"hello"'), '&quot;hello&quot;');
+    assert.strictEqual(esc("'world'"), '&#x27;world&#x27;');
+  });
+
+  it('should escape ampersand', () => {
+    assert.strictEqual(esc('a&b'), 'a&amp;b');
+  });
+
+  it('should escape backslash (onclick injection prevention)', () => {
+    assert.strictEqual(esc('a\\b'), 'a&#x5C;b');
+    assert.strictEqual(esc("\\'); alert(1); //"), "&#x5C;&#x27;); alert(1); //");
+  });
+
+  it('should handle null and undefined', () => {
+    assert.strictEqual(esc(null), '');
+    assert.strictEqual(esc(undefined), '');
+  });
+
+  it('should pass through safe strings unchanged', () => {
+    assert.strictEqual(esc('hello world 123'), 'hello world 123');
+  });
+});
+
 describe('stripNonUserContent', () => {
   it('should strip local-command-caveat', () => {
     assert.strictEqual(stripNonUserContent('<local-command-caveat>ignore this</local-command-caveat>real prompt'), 'real prompt');

@@ -33,9 +33,22 @@ function getClaudeProjectsDir() {
 }
 
 const _projectPathCache = new Map();
+const _PROJECT_PATH_CACHE_MAX = 500;
+
+function _projectPathCacheSet(key, value) {
+  _projectPathCache.set(key, value);
+  if (_projectPathCache.size > _PROJECT_PATH_CACHE_MAX) {
+    _projectPathCache.delete(_projectPathCache.keys().next().value);
+  }
+}
 
 async function resolveProjectPath(encoded) {
-  if (_projectPathCache.has(encoded)) return _projectPathCache.get(encoded);
+  if (_projectPathCache.has(encoded)) {
+    const v = _projectPathCache.get(encoded);
+    _projectPathCache.delete(encoded);
+    _projectPathCacheSet(encoded, v);
+    return v;
+  }
   let s = encoded;
   if (s.startsWith('-')) s = s.slice(1);
   if (!s) return '';
@@ -48,7 +61,7 @@ async function resolveProjectPath(encoded) {
   // Strategy 1: try direct decoded path on disk (handles dots correctly)
   try {
     await fsp.access('/' + directDecoded);
-    _projectPathCache.set(encoded, directDecoded);
+    _projectPathCacheSet(encoded, directDecoded);
     return directDecoded;
   } catch {}
 
@@ -77,7 +90,7 @@ async function resolveProjectPath(encoded) {
     try {
       await fsp.access(testPath);
       const result = `${pathPart}/${dirPart}`;
-      _projectPathCache.set(encoded, result);
+      _projectPathCacheSet(encoded, result);
       return result;
     } catch {
       // Path doesn't exist, try next combination
@@ -85,7 +98,7 @@ async function resolveProjectPath(encoded) {
   }
 
   // Fallback: return direct decoded path (correct even if path no longer exists on disk)
-  _projectPathCache.set(encoded, directDecoded);
+  _projectPathCacheSet(encoded, directDecoded);
   return directDecoded;
 }
 
@@ -609,10 +622,10 @@ class Watcher extends EventEmitter {
       const pending = this.pendingSubagents.get(sessionID) || [];
       if (!pending.includes(p)) pending.push(p);
       this.pendingSubagents.set(sessionID, pending);
-      return;
+      return Promise.resolve();
     }
 
-    this._registerSubagent(session, sessionID, agentID, p).catch(err => {
+    return this._registerSubagent(session, sessionID, agentID, p).catch(err => {
       if (this.debug) console.error('[watcher] _registerSubagent error:', err.message);
     });
   }
@@ -1007,15 +1020,15 @@ class Watcher extends EventEmitter {
       await prev;
 
       let handle;
-      const pos = this.filePositions.get(filePath) || 0;
+      let pos = this.filePositions.get(filePath) || 0;
       let newPos = pos;
       try {
         handle = await fsp.open(filePath, 'r');
         const stats = await handle.stat();
         if (pos > stats.size) {
-          // File was truncated — reset position to 0 so we re-read from the start
+          // File was truncated — reset position to 0 and re-read from the start
+          pos = 0;
           this.filePositions.set(filePath, 0);
-          await handle.close(); handle = null; return;
         }
         if (pos === stats.size) { await handle.close(); handle = null; return; }
 
@@ -1027,7 +1040,8 @@ class Watcher extends EventEmitter {
         const buf = Buffer.alloc(MaxReadChunk);
 
         while (true) {
-          const readFrom = newPos + carryOverBytes;
+          const prevCarryOverBytes = carryOverBytes;
+          const readFrom = newPos + prevCarryOverBytes;
           if (readFrom >= fileSize) break;
 
           const readLen = Math.min(MaxReadChunk, fileSize - readFrom);
@@ -1055,7 +1069,9 @@ class Watcher extends EventEmitter {
             carryOverBytes = 0;
           }
 
-          let chunkBytes = 0;
+          // Start from prevCarryOverBytes so carryOver bytes from the previous
+          // iteration are counted exactly once toward newPos advancement.
+          let chunkBytes = prevCarryOverBytes;
 
           for (let i = 0; i < rawLines.length; i++) {
             let rawLine = rawLines[i];
@@ -1155,6 +1171,7 @@ class Watcher extends EventEmitter {
       try { await fsp.access(p); } catch {
         this.filePositions.delete(p);
         this.fileContexts.delete(p);
+        this._readLocks.delete(p);
       }
     }
 
@@ -1171,6 +1188,10 @@ class Watcher extends EventEmitter {
         this.removeSession(sessionID);
         this.emit('broadcast', 'sessionRemoved', { sessionID });
       }
+    }
+
+    for (const sid of this.pendingSubagents.keys()) {
+      if (!this.sessions.has(sid)) this.pendingSubagents.delete(sid);
     }
   }
 
@@ -1190,15 +1211,20 @@ class Watcher extends EventEmitter {
         if (p) {
           this.fileContexts.delete(p);
           this.filePositions.delete(p);
+          this._readLocks.delete(p);
           const timer = this.debounceTimers.get(p);
           if (timer) {
             clearTimeout(timer);
             this.debounceTimers.delete(p);
           }
+          if (this.watcher) {
+            this.watcher.unwatch(p);
+          }
         }
       }
     }
     this.sessions.delete(sessionID);
+    this.pendingSubagents.delete(sessionID);
     if (session) {
       this.emit('sessionRemoved', { sessionID });
     }
@@ -1237,7 +1263,11 @@ function createWalkDir(readdirFn) {
           callback(fullPath, stats);
         }
       }
-    } catch {}
+    } catch (err) {
+      if (err.code !== 'ENOENT' && err.code !== 'EACCES') {
+        console.error(`[watcher] _walkDir error on ${dir}: ${err.message}`);
+      }
+    }
   };
   return walk;
 }

@@ -457,17 +457,21 @@ describe('_readFile', () => {
     assert.strictEqual(items[1].content, 'second');
   });
 
-  it('should detect file truncation and reset position', async () => {
+  it('should detect file truncation and re-read from start', async () => {
     const filePath = path.join(tmpDir, 'truncated.jsonl');
     fs.writeFileSync(filePath, makeTestLine('long content here') + '\n');
-    const { w } = setupWatcherAndSession(filePath);
+    const { w, items } = setupWatcherAndSession(filePath);
 
     await w._readFile(filePath, 's1', '', '');
     assert.ok(w.filePositions.get(filePath) > 0);
+    assert.strictEqual(items.length, 1);
 
     fs.writeFileSync(filePath, makeTestLine('short') + '\n');
     await w._readFile(filePath, 's1', '', '');
-    assert.strictEqual(w.filePositions.get(filePath), 0);
+    const newFileSize = fs.statSync(filePath).size;
+    assert.strictEqual(w.filePositions.get(filePath), newFileSize);
+    assert.strictEqual(items.length, 2);
+    assert.strictEqual(items[1].content, 'short');
   });
 
   it('should return immediately when no new data', async () => {
@@ -731,5 +735,152 @@ describe('readAgentType', () => {
 
     const result = await watcherModule.readAgentType(jsonlPath);
     assert.strictEqual(result, '');
+  });
+});
+
+// ============================================================================
+// _readFile — partial line / carryOver (#3)
+// ============================================================================
+
+describe('_readFile partial line and carryOver', () => {
+  let tmpDir;
+
+  before(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'carryover-test-'));
+  });
+
+  after(() => {
+    try { fs.rmSync(tmpDir, { recursive: true }); } catch {}
+  });
+
+  function makeTestLine(text) {
+    return JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] }, timestamp: '2025-01-01T12:00:00Z' });
+  }
+
+  function setupWatcherAndSession(filePath) {
+    const w = new watcherModule.Watcher({});
+    const items = [];
+    w.on('item', (item) => items.push(item));
+    w.on('error', () => {});
+    const session = new watcherModule.Session('s1', '/proj', filePath);
+    w.sessions.set('s1', session);
+    w.filePositions.set(filePath, 0);
+    return { w, items };
+  }
+
+  it('should not parse incomplete line at end of file (no trailing newline)', async () => {
+    const filePath = path.join(tmpDir, 'no-trailing-nl.jsonl');
+    fs.writeFileSync(filePath, makeTestLine('complete') + '\n' + makeTestLine('incomplete'));
+    const { w, items } = setupWatcherAndSession(filePath);
+
+    await w._readFile(filePath, 's1', '', '');
+    assert.strictEqual(items.length, 1);
+    assert.strictEqual(items[0].content, 'complete');
+  });
+
+  it('should parse incomplete line once newline is appended', async () => {
+    const filePath = path.join(tmpDir, 'append-nl.jsonl');
+    fs.writeFileSync(filePath, makeTestLine('first') + '\n' + makeTestLine('pending'));
+    const { w, items } = setupWatcherAndSession(filePath);
+
+    await w._readFile(filePath, 's1', '', '');
+    assert.strictEqual(items.length, 1);
+
+    fs.appendFileSync(filePath, '\n');
+    await w._readFile(filePath, 's1', '', '');
+    assert.strictEqual(items.length, 2);
+    assert.strictEqual(items[1].content, 'pending');
+  });
+
+  it('should handle line spanning chunk boundary (>64KB)', async () => {
+    const filePath = path.join(tmpDir, 'chunk-boundary.jsonl');
+    const shortLine = makeTestLine('short');
+    const longText = 'x'.repeat(70000);
+    const longLine = makeTestLine(longText);
+    const endLine = makeTestLine('end');
+    fs.writeFileSync(filePath, shortLine + '\n' + longLine + '\n' + endLine + '\n');
+    const { w, items } = setupWatcherAndSession(filePath);
+
+    await w._readFile(filePath, 's1', '', '');
+    assert.strictEqual(items.length, 3);
+    assert.strictEqual(items[0].content, 'short');
+    assert.strictEqual(items[1].content.length, 70000);
+    assert.strictEqual(items[2].content, 'end');
+    assert.strictEqual(w.filePositions.get(filePath), fs.statSync(filePath).size);
+  });
+
+  it('should handle incremental append after chunk-boundary read', async () => {
+    const filePath = path.join(tmpDir, 'chunk-incr.jsonl');
+    const longText = 'y'.repeat(70000);
+    fs.writeFileSync(filePath, makeTestLine(longText) + '\n');
+    const { w, items } = setupWatcherAndSession(filePath);
+
+    await w._readFile(filePath, 's1', '', '');
+    assert.strictEqual(items.length, 1);
+
+    fs.appendFileSync(filePath, makeTestLine('after-chunk') + '\n');
+    await w._readFile(filePath, 's1', '', '');
+    assert.strictEqual(items.length, 2);
+    assert.strictEqual(items[1].content, 'after-chunk');
+    assert.strictEqual(w.filePositions.get(filePath), fs.statSync(filePath).size);
+  });
+});
+
+// ============================================================================
+// _inferFileContext and _handleFsWrite coverage (#8)
+// ============================================================================
+
+describe('_inferFileContext extended', () => {
+  it('should cache and return context for known files', () => {
+    const w = new watcherModule.Watcher({});
+    const session = new watcherModule.Session('s1', '/proj', '/path/s1.jsonl');
+    session.subagents['a1'] = '/path/s1/subagents/agent-a1.jsonl';
+    w.sessions.set('s1', session);
+
+    w.fileContexts.set('/path/s1.jsonl', { sessionID: 's1', agentID: '', session });
+    const ctx = w.fileContexts.get('/path/s1.jsonl');
+    assert.strictEqual(ctx.sessionID, 's1');
+    assert.strictEqual(ctx.agentID, '');
+  });
+
+  it('should return null for non-jsonl extensions', () => {
+    const w = new watcherModule.Watcher({});
+    assert.strictEqual(w._inferFileContext('/path/file.json'), null);
+    assert.strictEqual(w._inferFileContext('/path/file.meta.json'), null);
+    assert.strictEqual(w._inferFileContext('/path/file.log'), null);
+  });
+
+  it('should return null for tool-results directory files', () => {
+    const w = new watcherModule.Watcher({});
+    const ctx = w._inferFileContext('/path/s1/tool-results/result.jsonl');
+    assert.strictEqual(ctx, null);
+  });
+});
+
+// ============================================================================
+// Watcher removeSession cleanup (#4 / #13 verification)
+// ============================================================================
+
+describe('removeSession cleanup', () => {
+  it('should clean up pendingSubagents on session removal', () => {
+    const w = new watcherModule.Watcher({});
+    const session = new watcherModule.Session('s1', '/proj', '/file.jsonl');
+    w.sessions.set('s1', session);
+    w.pendingSubagents.set('s1', ['/some/path.jsonl']);
+
+    w.removeSession('s1');
+
+    assert.strictEqual(w.pendingSubagents.has('s1'), false);
+  });
+
+  it('should clean up _readLocks on session removal', () => {
+    const w = new watcherModule.Watcher({});
+    const session = new watcherModule.Session('s1', '/proj', '/file.jsonl');
+    w.sessions.set('s1', session);
+    w._readLocks.set('/file.jsonl', Promise.resolve());
+
+    w.removeSession('s1');
+
+    assert.strictEqual(w._readLocks.has('/file.jsonl'), false);
   });
 });

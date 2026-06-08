@@ -196,11 +196,21 @@ function formatTokenCount(n) {
   return String(n);
 }
 
+const CONTEXT_WINDOWS = {
+  'claude-opus-4-7': 1000000,
+  'claude-opus-4-6': 200000,
+  'claude-sonnet-4-6': 1000000,
+  'claude-sonnet-4-5': 200000,
+  'claude-haiku-4-5': 200000,
+  'claude-haiku-4': 200000,
+};
+
 function contextWindowFor(model) {
   if (!model) return 200000;
-  if (model.startsWith('claude-opus-4-7') || model.startsWith('claude-sonnet-4-6')) return 1000000;
-  if (model.startsWith('claude-haiku-4-5') || model.startsWith('claude-opus-4-6') ||
-      model.startsWith('claude-sonnet-4-5') || model.startsWith('claude-haiku-4')) return 200000;
+  for (const [prefix, win] of Object.entries(CONTEXT_WINDOWS)) {
+    if (model.startsWith(prefix)) return win;
+  }
+  if (/claude-(opus|sonnet)/.test(model)) return 1000000;
   return 200000;
 }
 

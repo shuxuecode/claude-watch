@@ -255,7 +255,9 @@ class DashboardServer {
       this.clients.delete(ws);
     });
 
-    ws.on('error', () => {});
+    ws.on('error', (err) => {
+      if (this.debugAll) console.error('[server] WS client error:', err.message);
+    });
 
     this.sendSnapshot(ws);
     this.sendItemBatch(ws);
@@ -396,7 +398,10 @@ class DashboardServer {
     try {
       const result = cp.execSync(cmd, { encoding: 'utf-8' }).trim();
       if (!result) return false;
-      const pids = result.split('\n').map(s => s.trim()).filter(Boolean);
+      let pids = result.split('\n').map(s => s.trim()).filter(Boolean);
+      if (process.platform === 'win32') {
+        pids = pids.map(line => line.split(/\s+/).pop());
+      }
 
       // Ask user for confirmation before killing
       const confirmed = await askYesNo(`Port ${port} is occupied by process(es) ${pids.join(', ')}. Kill them? [y/N] `);
@@ -539,7 +544,14 @@ class DashboardServer {
   stop() {
     if (this._contextCleanupTimer) clearInterval(this._contextCleanupTimer);
     if (this._heartbeatTimer) clearInterval(this._heartbeatTimer);
-    if (this._flushTimer) clearTimeout(this._flushTimer);
+    if (this._flushTimer) {
+      clearTimeout(this._flushTimer);
+      this._flushTimer = null;
+    }
+    if (this._pendingItems.length > 0) {
+      this.broadcast('itemBatch', this._pendingItems);
+      this._pendingItems = [];
+    }
     if (this.wss) this.wss.close();
     if (this.server) this.server.close();
     if (this.watcher) this.watcher.stop();
@@ -549,6 +561,12 @@ class DashboardServer {
 
 async function startServer(options = {}) {
   const ds = new DashboardServer(options);
+  const shutdown = () => {
+    ds.stop();
+    process.exit(0);
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
   return ds.start(options);
 }
 

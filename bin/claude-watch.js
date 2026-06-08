@@ -286,7 +286,7 @@ async function main() {
   }
 
   checkForUpdate();
-  startServer(options);
+  await startServer(options);
 }
 
 main().catch(err => {

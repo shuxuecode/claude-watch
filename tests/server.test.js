@@ -539,6 +539,22 @@ describe('WS handleCommand', () => {
     ws.close();
   });
 
+  it('should handle unknown command gracefully', async () => {
+    const ws = new WebSocket(`ws://127.0.0.1:${ds.port}`);
+
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { ws.close(); reject(new Error('timeout')); }, 3000);
+      ws.on('open', () => { clearTimeout(timer); resolve(); });
+      ws.on('error', () => { clearTimeout(timer); ws.close(); resolve(); });
+    });
+
+    ws.send(JSON.stringify({ action: 'nonExistentAction' }));
+    await new Promise(r => setTimeout(r, 100));
+
+    assert.ok(ws.readyState <= WebSocket.OPEN);
+    ws.close();
+  });
+
   it('should send context via getContext command', async () => {
     ds.updateContext({ sessionID: 'ctx-s1', agentID: '', inputTokens: 99, outputTokens: 0 });
 
@@ -566,5 +582,115 @@ describe('WS handleCommand', () => {
     assert.strictEqual(lastCtx.payload['ctx-s1:'].inputTokens, 99);
 
     ws.close();
+  });
+});
+
+// ============================================================================
+// WebSocket reconnection (#2)
+// ============================================================================
+
+describe('WebSocket reconnection behavior', () => {
+  let ds;
+
+  before(async () => {
+    ds = createServer();
+    ds.updateContext({ sessionID: 'rc-s1', agentID: '', inputTokens: 77 });
+    ds.itemBuffer.push({ type: 'text', sessionID: 'rc-s1', agentID: '', content: 'buffered' });
+    await startBareServer(ds);
+  });
+
+  after(() => {
+    ds.stop();
+  });
+
+  it('should remove client on disconnect and accept reconnect', async () => {
+    const ws1 = new WebSocket(`ws://127.0.0.1:${ds.port}`);
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { ws1.close(); reject(new Error('timeout')); }, 3000);
+      ws1.on('open', () => { clearTimeout(timer); resolve(); });
+      ws1.on('error', () => { clearTimeout(timer); ws1.close(); resolve(); });
+    });
+    assert.strictEqual(ds.clients.size, 1);
+
+    ws1.close();
+    await new Promise(r => setTimeout(r, 100));
+    assert.strictEqual(ds.clients.size, 0);
+
+    const ws2 = new WebSocket(`ws://127.0.0.1:${ds.port}`);
+    const messages = [];
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { ws2.close(); reject(new Error('timeout')); }, 3000);
+      ws2.on('message', (data) => {
+        messages.push(JSON.parse(data.toString()));
+        if (messages.length >= 3) { clearTimeout(timer); resolve(); }
+      });
+      ws2.on('error', () => { clearTimeout(timer); ws2.close(); resolve(); });
+    });
+
+    assert.strictEqual(ds.clients.size, 1);
+    const ctxMsg = messages.find(m => m.type === 'context');
+    assert.ok(ctxMsg, 'reconnected client should receive context');
+    assert.strictEqual(ctxMsg.payload['rc-s1:'].inputTokens, 77);
+
+    const batchMsg = messages.find(m => m.type === 'itemBatch');
+    assert.ok(batchMsg, 'reconnected client should receive item buffer');
+
+    ws2.close();
+  });
+});
+
+// ============================================================================
+// stop() should flush pending items (#18 verification)
+// ============================================================================
+
+describe('stop() flushes pending items', () => {
+  it('should broadcast pending items before closing', async () => {
+    const ds2 = createServer();
+    await startBareServer(ds2);
+
+    const ws = new WebSocket(`ws://127.0.0.1:${ds2.port}`);
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { ws.close(); reject(new Error('timeout')); }, 3000);
+      ws.on('open', () => { clearTimeout(timer); resolve(); });
+      ws.on('error', () => { clearTimeout(timer); ws.close(); resolve(); });
+    });
+
+    // Drain initial messages
+    await new Promise(r => setTimeout(r, 50));
+
+    const received = [];
+    ws.on('message', (data) => { received.push(JSON.parse(data.toString())); });
+
+    // Add items to pending buffer directly
+    ds2._pendingItems.push({ type: 'text', sessionID: 's1', content: 'flush-me' });
+
+    ds2.stop();
+
+    await new Promise(r => setTimeout(r, 100));
+    const flushed = received.find(m => m.type === 'itemBatch' && m.payload.some(i => i.content === 'flush-me'));
+    assert.ok(flushed, 'pending items should be flushed on stop');
+
+    try { ws.close(); } catch {}
+  });
+});
+
+// ============================================================================
+// killExistingPort Windows PID parsing (#9)
+// ============================================================================
+
+describe('killExistingPort PID parsing', () => {
+  it('should extract PID from Windows netstat output format', () => {
+    const windowsOutput = [
+      '  TCP    0.0.0.0:23000          0.0.0.0:0              LISTENING       1234',
+      '  TCP    [::]:23000             [::]:0                 LISTENING       5678',
+    ];
+    const pids = windowsOutput.map(s => s.trim()).filter(Boolean).map(line => line.split(/\s+/).pop());
+    assert.deepStrictEqual(pids, ['1234', '5678']);
+  });
+
+  it('should handle Unix lsof output (bare PIDs)', () => {
+    const unixOutput = ['1234', '5678'];
+    const pids = unixOutput.map(s => s.trim()).filter(Boolean);
+    assert.deepStrictEqual(pids, ['1234', '5678']);
   });
 });
