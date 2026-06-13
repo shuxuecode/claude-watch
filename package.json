@@ -1,6 +1,6 @@
 {
   "name": "claude-code-watch",
-  "version": "0.0.25",
+  "version": "0.1.2",
   "description": "Web-based real-time monitor for Claude Code.",
   "main": "./src/server/server.js",
   "bin": {

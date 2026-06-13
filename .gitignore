@@ -1,6 +1,8 @@
 node_modules/
 *.log
+PROJECT.md
 .DS_Store
 coverage/
 tmp/
 .claude/
+.playwright-mcp/

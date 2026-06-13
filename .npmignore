@@ -1,0 +1,21 @@
+# Development & test files
+tests/
+.claude/
+.playwright-mcp/
+
+# Documentation & meta
+PROJECT.md
+claude-watch-article.md
+CHANGELOG.md
+
+# OS & editor files
+.DS_Store
+*.log
+
+# Build artifacts
+coverage/
+tmp/
+
+# Config & lock files
+package-lock.json
+.gitignore

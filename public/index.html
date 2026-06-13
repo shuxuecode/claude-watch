@@ -190,7 +190,20 @@ body {
   background: rgba(255,255,255,0.08);
   padding: 0 3px; border-radius: 3px; flex-shrink: 0; font-family: monospace;
   letter-spacing: 0.5px; vertical-align: middle; font-weight: 600;
+  position: relative; cursor: pointer;
 }
+.session-id-tip {
+  position: fixed; z-index: 10000;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 4px;
+  padding: 4px 8px; font-size: 11px; white-space: nowrap; color: var(--text);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4); display: flex; align-items: center; gap: 6px;
+}
+.session-id-tip code { font-family: monospace; user-select: all; color: var(--white); }
+.session-id-tip .tip-copy-btn {
+  background: var(--bg3); border: 1px solid var(--border); border-radius: 3px;
+  color: var(--text); font-size: 10px; padding: 1px 5px; cursor: pointer;
+}
+.session-id-tip .tip-copy-btn:hover { background: var(--accent); color: #fff; }
 .tree-actions { display: none; gap: 2px; padding-right: 4px; }
 .tree-row:hover .tree-actions { display: flex; }
 .tree-row.selected>.tree-actions { display: flex; }
@@ -226,6 +239,15 @@ body {
 .stream-line.agent-tag .tag-label { flex-shrink: 0; }
 .stream-line.agent-tag .timestamp { font-weight: normal; font-size: 0.85em; color: var(--dim); white-space: nowrap; }
 .stream-line.separator { color: var(--dim); }
+.stream-line.user-prompt-block {
+  background: rgba(59,130,246,0.08);
+  border-left: 8px solid var(--blue);
+  border-radius: 4px;
+  padding: 6px 10px;
+  margin: 4px 0;
+  color: var(--white);
+  line-height: 1.5;
+}
 
 /* ── Footer ── */
 #footer {
@@ -363,6 +385,7 @@ body {
   <button class="btn on" id="btn-tool-output" onclick="toggleToolOutput()" data-tooltip="Toggle tool output">📤 Output</button>
   <button class="btn on" id="btn-text" onclick="toggleText()" data-tooltip="Toggle text responses">💬 Text</button>
   <button class="btn on" id="btn-hook" onclick="toggleHook()" data-tooltip="Toggle hook output">🪝 Hook</button>
+  <button class="btn on" id="btn-user-prompt" onclick="toggleUserPrompt()" data-tooltip="Toggle user prompt">👤 Prompt</button>
   <span class="sep">│</span>
   <button class="btn on" id="btn-autoscroll" onclick="toggleAutoScroll()" data-tooltip="Auto-scroll">⇣ Auto</button>
   <button class="btn" id="btn-tree-toggle" onclick="toggleTree()" data-tooltip="Toggle tree panel">📂 Tree</button>
@@ -384,6 +407,7 @@ body {
       <button class="btn btn-icon accent" onclick="soloSelected()" data-tooltip="独显：只看选中项，再点恢复全显">⊙</button>
       <button class="btn btn-icon danger" onclick="removeSelectedSession()" data-tooltip="移除：隐藏选中会话（24h）">✕</button>
       <button class="btn btn-icon on" id="btn-activity" onclick="toggleActivity()" data-tooltip="活动：显示/隐藏操作摘要">💬</button>
+      <button class="btn btn-icon on" id="btn-token-display" onclick="toggleTokenDisplay()" data-tooltip="上下文：Token数 ↔ 百分比切换">T</button>
       <span style="flex:1"></span>
       <span id="tree-cursor-info" style="font-size:10px;color:var(--dim)"></span>
     </div>
@@ -487,7 +511,9 @@ let showToolInput = true;
 let showToolOutput = true;
 let showText = true;
 let showHook = true;
+let showUserPrompt = true;
 let showActivity = true;
+let showTokenCount = true;
 let autoDiscovery = true;
 let appVersion = '';
 
@@ -871,7 +897,7 @@ function isItemVisible(item) {
     case 'tool_output': return showToolOutput;
     case 'text': return showText;
     case 'hook_output': return showHook;
-    case 'user_text': return false;
+    case 'user_text': return showUserPrompt;
     default: return true;
   }
 }
@@ -1021,7 +1047,7 @@ function getNodeHTML(node, idx) {
   }
 
   if (node.type === 'session') {
-    const displayName = node.title || folderName(node.projectPath) || node.id.slice(0, 14);
+    const displayName = folderName(node.projectPath) || node.title || node.id.slice(0, 14);
     const parts = [];
     if (node.model) parts.push(`🧠 ${esc(node.model)}`);
     const activeDot = isSessionActive(node) ? '<span class="active-dot on">🟢</span>' : '<span class="active-dot off">⚪</span>';
@@ -1032,7 +1058,7 @@ function getNodeHTML(node, idx) {
     return `<div class="tree-row tree-row-session${selClass ? ' selected' : ''}">
       <div class="tree-content" onclick="treeClick(${idx})" data-idx="${idx}">
         <div class="tree-node">
-          <span class="tree-prefix">${treePrefix(node)}</span>${activeDot} ${node.collapsed ? '▸' : '▾'} <span class="session-prefix" style="color:${idColor(node.colorRank)}">${esc(node.id.split('-')[0].toUpperCase())}</span> ${esc(displayName)}
+          <span class="tree-prefix">${treePrefix(node)}</span>${activeDot} ${node.collapsed ? '▸' : '▾'} <span class="session-prefix" style="color:${idColor(node.colorRank)}" data-sid="${esc(node.id)}" onmouseenter="showSessionIdTip(this)" onmouseleave="hideSessionIdTip(this)">${esc(node.id.split('-')[0].toUpperCase())}</span> ${esc(displayName)}
           ${node.collapsed && agentCount > 0 ? `(${esc(String(agentCount))})` : ''}
           ${subInfo}
           ${timeHtml}
@@ -1054,7 +1080,11 @@ function getNodeHTML(node, idx) {
     if (ctx && ctx.contextWindow > 0 && ctx.inputTokens > 0) {
       const pct = Math.round(ctx.inputTokens / ctx.contextWindow * 100);
       const cls = pct > 80 ? 'danger' : pct > 50 ? 'warn' : '';
-      ctxPct = `<span class="ctx-pct ${cls}">${pct}%</span>`;
+      if (showTokenCount) {
+        ctxPct = `<span class="ctx-pct ${cls}">${fmtTok(ctx.inputTokens)}</span>`;
+      } else {
+        ctxPct = `<span class="ctx-pct ${cls}">${pct}%</span>`;
+      }
     }
     const activeDot = ctx && (Date.now() - ctx.lastActivity < 120000) ? '<span class="active-dot on">🟢</span>' : '<span class="active-dot off">⚪</span>';
     const actIcon = node.type === 'main' ? '🗣' : '⚡';
@@ -1324,6 +1354,10 @@ function renderItem(item) {
       for (const l of truncContent(item.content)) lines.push({ cls: 'stream-line debug', text: l, sessionID: sid });
       break;
     }
+    case 'user_text':
+      lines.push({ cls: agentTagCls, text: `<span class="tag-label">${agentLabel}${sep}👤 User Prompt</span>${tsHtml}`, html: true, sessionID: sid });
+      lines.push({ cls: 'stream-line user-prompt-block md-content', text: mdRender(item.content), html: true, sessionID: sid });
+      break;
   }
 
   lines.push({ cls: 'stream-line separator', text: '─'.repeat(60), sessionID: sid });
@@ -1345,7 +1379,12 @@ function refreshButtons() {
   document.getElementById('btn-tool-output').classList.toggle('on', showToolOutput);
   document.getElementById('btn-text').classList.toggle('on', showText);
   document.getElementById('btn-hook').classList.toggle('on', showHook);
+  document.getElementById('btn-user-prompt').classList.toggle('on', showUserPrompt);
   document.getElementById('btn-activity').classList.toggle('on', showActivity);
+  const btnTokenDisplay = document.getElementById('btn-token-display');
+  btnTokenDisplay.classList.toggle('on', true);
+  btnTokenDisplay.textContent = showTokenCount ? 'T' : '%';
+  btnTokenDisplay.setAttribute('data-tooltip', showTokenCount ? '上下文：Token数 ↔ 百分比切换' : '上下文：百分比 ↔ Token数切换');
   document.getElementById('btn-autoscroll').classList.toggle('on', autoScroll);
   document.getElementById('btn-tree-toggle').classList.toggle('on', showTree);
   document.getElementById('btn-autodisco').classList.toggle('on', autoDiscovery);
@@ -1355,7 +1394,7 @@ function refreshButtons() {
   if (sessions.length === 0) info = 'Waiting...';
   else if (sessions.length === 1) {
     const s = sessions[0];
-    info = (s.title || folderName(s.projectPath) || s.id.slice(0, 14));
+    info = (folderName(s.projectPath) || s.title || s.id.slice(0, 14));
   } else info = sessions.length + ' sessions';
   if (!autoDiscovery) info += ' [paused]';
   sessionInfo.textContent = info;
@@ -1377,6 +1416,50 @@ function refreshButtons() {
     const v = appVersion ? `v${appVersion}` : '';
     vEl.innerHTML = `${v ? v + ' · ' : ''}<a href="https://github.com/shuxuecode/claude-watch" target="_blank" rel="noopener" style="color:var(--dim);display:inline-flex;align-items:center;gap:3px"><svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" style="vertical-align:middle"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>claude-watch</a>`;
   }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Session ID tooltip
+// ══════════════════════════════════════════════════════════════════════════════
+
+let sessionIdTipTimer = null;
+let sessionIdTipEl = null;
+function showSessionIdTip(el) {
+  hideAllSessionIdTips();
+  const sid = el.getAttribute('data-sid');
+  if (!sid) return;
+  sessionIdTipTimer = setTimeout(() => {
+    const rect = el.getBoundingClientRect();
+    const tip = document.createElement('div');
+    tip.className = 'session-id-tip';
+    tip.style.top = (rect.bottom + 4) + 'px';
+    tip.style.left = rect.left + 'px';
+    tip.innerHTML = `<button class="tip-copy-btn" onclick="event.stopPropagation();copySessionId(this)">Copy</button><code>${esc(sid)}</code>`;
+    tip.onmouseenter = () => clearTimeout(sessionIdTipTimer);
+    tip.onmouseleave = () => { hideAllSessionIdTips(); };
+    document.body.appendChild(tip);
+    sessionIdTipEl = tip;
+    el._tip = tip;
+  }, 300);
+}
+function hideSessionIdTip(el) {
+  sessionIdTipTimer = setTimeout(() => {
+    if (el._tip) { el._tip.remove(); el._tip = null; }
+    sessionIdTipEl = null;
+  }, 200);
+}
+function hideAllSessionIdTips() {
+  clearTimeout(sessionIdTipTimer);
+  document.querySelectorAll('.session-id-tip').forEach(t => t.remove());
+  sessionIdTipEl = null;
+}
+function copySessionId(btn) {
+  const code = btn.parentElement.querySelector('code');
+  if (!code) return;
+  navigator.clipboard.writeText(code.textContent).then(() => {
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.closest('.session-id-tip')?.remove(); }, 800);
+  });
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1538,7 +1621,15 @@ function toggleText() { showText = !showText; needsFullRender = true;
   visibleDirty = true; renderStream(); refreshButtons(); }
 function toggleHook() { showHook = !showHook; needsFullRender = true;
   visibleDirty = true; renderStream(); refreshButtons(); }
+function toggleUserPrompt() { showUserPrompt = !showUserPrompt; needsFullRender = true;
+  visibleDirty = true; renderStream(); refreshButtons(); }
 function toggleActivity() { showActivity = !showActivity; rebuildNodes(); scheduleRender(); refreshButtons(); }
+function toggleTokenDisplay() {
+  showTokenCount = !showTokenCount;
+  treeDirty = true;
+  scheduleRender();
+  refreshButtons();
+}
 function toggleAutoScroll() { autoScroll = !autoScroll; if (autoScroll) streamEl.scrollTop = streamEl.scrollHeight; renderAll(); }
 function toggleTree() { showTree = !showTree; document.getElementById('tree-panel').classList.toggle('hidden', !showTree); }
 function toggleAutoDiscovery() { sendCmd('toggleAutoDiscovery'); }
@@ -1711,8 +1802,8 @@ function fmtTimestamp(ts) {
 function fmtTok(n) {
   if (!n) return '0';
   if (n < 1000) return String(n);
-  if (n < 1000000) return (n / 1000).toFixed(1) + 'k';
-  return (n / 1000000).toFixed(1) + 'm';
+  if (n < 1000000) return (n / 1000).toFixed(2) + 'k';
+  return (n / 1000000).toFixed(2) + 'm';
 }
 
 function renderAll() {

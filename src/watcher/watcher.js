@@ -927,7 +927,7 @@ class Watcher extends EventEmitter {
 
   async _initializeSessionReading(sessions) {
     let shouldSkip = this.skipHistory;
-    if (!shouldSkip) {
+    if (!shouldSkip && !this._sessionID) {
       let totalEstimate = 0;
       for (const session of sessions) {
         totalEstimate += await this._estimateFileLines(session.mainFile);
