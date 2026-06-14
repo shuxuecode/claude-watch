@@ -302,7 +302,7 @@ describe('WebSocket integration', () => {
       ws.on('message', (data) => {
         const msg = JSON.parse(data.toString('utf-8'));
         messages.push(msg);
-        if (messages.length >= 3) { clearTimeout(timer); ws.close(); resolve(); }
+        if (messages.length >= 4) { clearTimeout(timer); ws.close(); resolve(); }
       });
       ws.on('error', () => { clearTimeout(timer); ws.close(); resolve(); });
       ws.on('close', () => { clearTimeout(timer); resolve(); });

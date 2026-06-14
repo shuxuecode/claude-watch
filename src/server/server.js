@@ -9,6 +9,7 @@ var readline = require('readline');
 var { WebSocketServer } = require('ws');
 var { Watcher, listSessions, listActiveSessions } = require('../watcher/watcher');
 var { setDebugAll, contextWindowFor } = require('../parser/parser');
+var { fullScanTokenUsage } = require('../scanner/scanner');
 
 var PACKAGE_VERSION = require('../../package.json').version;
 
@@ -37,6 +38,11 @@ class DashboardServer {
     this._contextCleanupTimer = null;
     this._pendingItems = [];
     this._flushTimer = null;
+    this._tokenStatsDirty = false;
+
+    // Time-series token stats: daily aggregation (never cleaned up)
+    // Key: "YYYY-MM-DD", value: { messages, input, output, cacheCreation, cacheRead, models: { modelName: { input, output, cacheCreation, cacheRead } } }
+    this.dailyStats = new Map();
 
     this.server = null;
     this.wss = null;
@@ -67,6 +73,12 @@ class DashboardServer {
     return Date.now();
   }
 
+  _getDateKey(ts) {
+    let d = new Date(ts);
+    if (isNaN(d.getTime())) d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+
   updateContext(item) {
     const key = this.getCtxKey(item.sessionID, item.agentID);
     let ctx = this.contextMap.get(key);
@@ -85,6 +97,36 @@ class DashboardServer {
       ctx.contextWindow = contextWindowFor(item.model);
     }
     ctx.lastActivity = Math.max(ctx.lastActivity || 0, this.itemTime(item));
+
+    // ── Time-series aggregation for token stats ──
+    // All 4 token fields are summed (incremental for billing/consumption perspective)
+    const hasTokens = item.inputTokens || item.outputTokens || item.cacheCreationTokens || item.cacheReadTokens;
+    if (hasTokens) {
+      const dateKey = this._getDateKey(this.itemTime(item));
+      let day = this.dailyStats.get(dateKey);
+      if (!day) {
+        day = { messages: 0, input: 0, output: 0, cacheCreation: 0, cacheRead: 0, models: {} };
+        this.dailyStats.set(dateKey, day);
+      }
+      day.messages++;
+      if (item.inputTokens) day.input += item.inputTokens;
+      if (item.outputTokens) day.output += item.outputTokens;
+      if (item.cacheCreationTokens) day.cacheCreation += item.cacheCreationTokens;
+      if (item.cacheReadTokens) day.cacheRead += item.cacheReadTokens;
+
+      // Per-model breakdown within this day
+      if (item.model) {
+        let m = day.models[item.model];
+        if (!m) {
+          m = { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 };
+          day.models[item.model] = m;
+        }
+        if (item.inputTokens) m.input += item.inputTokens;
+        if (item.outputTokens) m.output += item.outputTokens;
+        if (item.cacheCreationTokens) m.cacheCreation += item.cacheCreationTokens;
+        if (item.cacheReadTokens) m.cacheRead += item.cacheReadTokens;
+      }
+    }
   }
 
   cleanupContextMap() {
@@ -110,6 +152,47 @@ class DashboardServer {
       };
     }
     return result;
+  }
+
+  getTokenStatsSnapshot() {
+    // Convert dailyStats Map to plain object, sorted by date descending
+    const daily = {};
+    const sortedKeys = [...this.dailyStats.keys()].sort().reverse();
+    for (const k of sortedKeys) {
+      const d = this.dailyStats.get(k);
+      daily[k] = {
+        messages: d.messages,
+        input: d.input,
+        output: d.output,
+        cacheCreation: d.cacheCreation,
+        cacheRead: d.cacheRead,
+        models: d.models,
+      };
+    }
+
+    // Compute global totals
+    let totalMessages = 0, totalInput = 0, totalOutput = 0, totalCacheCreation = 0, totalCacheRead = 0;
+    const modelTotals = {};
+    for (const [, d] of this.dailyStats) {
+      totalMessages += d.messages;
+      totalInput += d.input;
+      totalOutput += d.output;
+      totalCacheCreation += d.cacheCreation;
+      totalCacheRead += d.cacheRead;
+      for (const [modelName, m] of Object.entries(d.models)) {
+        if (!modelTotals[modelName]) modelTotals[modelName] = { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 };
+        modelTotals[modelName].input += m.input;
+        modelTotals[modelName].output += m.output;
+        modelTotals[modelName].cacheCreation += m.cacheCreation;
+        modelTotals[modelName].cacheRead += m.cacheRead;
+      }
+    }
+
+    return {
+      totals: { messages: totalMessages, input: totalInput, output: totalOutput, cacheCreation: totalCacheCreation, cacheRead: totalCacheRead, days: this.dailyStats.size },
+      modelTotals,
+      daily,
+    };
   }
 
   broadcast(type, payload) {
@@ -207,6 +290,11 @@ class DashboardServer {
       return;
     }
 
+    if (route === '/token-stats') {
+      this.sendJSON(res, this.getTokenStatsSnapshot());
+      return;
+    }
+
     if (route === '/task-output') {
       const filePath = params.get('path');
       if (!filePath) { this.sendJSON(res, { error: 'Missing path param' }, 400); return; }
@@ -262,6 +350,7 @@ class DashboardServer {
     this.sendSnapshot(ws);
     this.sendItemBatch(ws);
     this.sendContext(ws);
+    this.sendTokenStats(ws);
     this.sendConfig(ws);
   }
 
@@ -292,6 +381,10 @@ class DashboardServer {
 
   send(ws, type, payload) {
     try { ws.send(JSON.stringify({ type, payload })); } catch {}
+  }
+
+  sendTokenStats(ws) {
+    this.send(ws, 'tokenStats', this.getTokenStatsSnapshot());
   }
 
   sendSnapshot(ws) {
@@ -359,12 +452,20 @@ class DashboardServer {
       }
       this.updateContext(item);
       this._pendingItems.push(item);
+      // Track if any item in this batch has token data (for tokenStats broadcast)
+      if (item.inputTokens || item.outputTokens || item.cacheCreationTokens || item.cacheReadTokens) {
+        this._tokenStatsDirty = true;
+      }
       if (this._pendingItems.length >= FLUSH_BATCH_LIMIT) {
         // Batch size hit limit — flush immediately
         if (this._flushTimer) { clearTimeout(this._flushTimer); this._flushTimer = null; }
         const batch = this._pendingItems;
         this._pendingItems = [];
         this.broadcast('itemBatch', batch);
+        if (this._tokenStatsDirty) {
+          this._tokenStatsDirty = false;
+          this.broadcast('tokenStats', this.getTokenStatsSnapshot());
+        }
       } else if (!this._flushTimer) {
         this._flushTimer = setTimeout(() => {
           this._flushTimer = null;
@@ -374,6 +475,10 @@ class DashboardServer {
             this.broadcast('item', batch[0]);
           } else if (batch.length > 1) {
             this.broadcast('itemBatch', batch);
+          }
+          if (this._tokenStatsDirty) {
+            this._tokenStatsDirty = false;
+            this.broadcast('tokenStats', this.getTokenStatsSnapshot());
           }
         }, 50);
       }
@@ -496,6 +601,26 @@ class DashboardServer {
         process.exit(1);
       }
     });
+
+    // ── Full-scan historical JSONL files for token stats ──
+    // This runs BEFORE watcher starts, scanning ALL files regardless of age
+    console.log('  Scanning historical token data...');
+    try {
+      const scannedDaily = await fullScanTokenUsage((done, total) => {
+        if (total > 0 && (done % 100 === 0 || done === total)) {
+          console.log(`  Scanned ${done}/${total} files...`);
+        }
+      });
+      // Merge scanned data into this.dailyStats
+      for (const [dateStr, day] of scannedDaily) {
+        this.dailyStats.set(dateStr, day);
+      }
+      const totalDays = this.dailyStats.size;
+      const totalMsgs = [...this.dailyStats.values()].reduce((s, d) => s + d.messages, 0);
+      console.log(`  Token scan complete: ${totalDays} days, ${totalMsgs.toLocaleString()} messages`);
+    } catch (err) {
+      console.error('  Token scan error (non-critical, continuing):', err.message);
+    }
 
     const w = this.setupWatcher(watcherOpts);
 

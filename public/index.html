@@ -209,31 +209,64 @@ body {
 .tree-row.selected>.tree-actions { display: flex; }
 
 /* ── Tokens page ── */
-#tokens-page { flex: 1; display: flex; flex-direction: column; overflow-y: auto; padding: 16px 24px; gap: 16px; background: var(--bg); }
-.token-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; }
-.token-card-title { font-size: 13px; font-weight: 600; color: var(--white); margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
-.token-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
-.token-item { display: flex; flex-direction: column; gap: 2px; }
-.token-label { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; }
-.token-value { font-size: 16px; font-weight: 600; color: var(--white); font-family: monospace; }
-.token-bar { height: 4px; border-radius: 2px; background: var(--bg3); margin-top: 4px; }
-.token-bar-fill { height: 100%; border-radius: 2px; background: var(--purple); transition: width 0.3s; }
-.token-bar-fill.warn { background: var(--yellow); }
-.token-bar-fill.danger { background: var(--red); }
-.token-section-title { font-size: 12px; font-weight: 600; color: var(--dim); margin: 8px 0 4px; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
-.token-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 4px; }
-.token-table th { background: var(--bg3); color: var(--white); padding: 6px 8px; text-align: left; font-weight: 600; font-size: 11px; border-bottom: 1px solid var(--border); }
-.token-table td { padding: 5px 8px; color: var(--text); border-bottom: 1px solid var(--border); font-family: monospace; }
-.token-table tr:hover td { background: var(--bg3); }
-.token-detail-row { display: flex; gap: 4px; margin-top: 6px; font-size: 12px; flex-wrap: wrap; }
-.token-detail-row .token-kv { color: var(--dim); }
-.token-detail-row .token-kv b { color: var(--text); font-family: monospace; }
-.token-usage-line { display: flex; align-items: baseline; gap: 8px; margin-top: 2px; }
-.token-usage-line .token-pct { font-size: 12px; font-weight: 600; }
-.token-usage-line .token-pct.warn { color: var(--yellow); }
-.token-usage-line .token-pct.danger { color: var(--red); }
-.token-usage-line .token-ctx-info { font-size: 11px; color: var(--dim); }
-.token-active-dot { font-size: 10px; }
+#tokens-page { flex: 1; display: flex; flex-direction: column; overflow-y: auto; padding: 20px 24px; gap: 16px; background: var(--bg); }
+.tp-top { display: flex; gap: 16px; }
+.tp-left { width: 260px; flex-shrink: 0; display: flex; flex-direction: column; gap: 12px; }
+.tp-right { flex: 1; display: flex; flex-direction: column; gap: 12px; }
+.tp-box { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+.tp-total-label { font-size: 11px; color: var(--dim); text-transform: uppercase; margin-bottom: 2px; }
+.tp-total-value { font-size: 22px; font-weight: 700; color: var(--white); font-family: monospace; }
+.tp-total-sub { font-size: 10px; color: var(--dim); margin-top: 2px; }
+.tp-stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.tp-stat { padding: 8px 10px; background: var(--bg3); border-radius: 6px; }
+.tp-stat .tp-s-l { font-size: 10px; color: var(--dim); }
+.tp-stat .tp-s-v { font-size: 13px; font-weight: 600; color: var(--white); font-family: monospace; }
+.tp-rank-title { font-size: 12px; color: var(--dim); font-weight: 600; margin-bottom: 8px; }
+.tp-rank-item { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--border); }
+.tp-rank-num { width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: var(--bg3); font-size: 10px; font-weight: 600; color: var(--dim); flex-shrink: 0; }
+.tp-rank-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.tp-rank-name { font-size: 12px; color: var(--text); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tp-rank-pct { font-size: 12px; font-weight: 600; color: var(--white); font-family: monospace; flex-shrink: 0; }
+.tp-footer-stats { display: flex; justify-content: space-between; padding-top: 8px; border-top: 1px solid var(--border); font-size: 11px; color: var(--dim); }
+.tp-footer-stats .tp-fv { color: var(--text); font-family: monospace; }
+.tp-h3 { font-size: 12px; color: var(--dim); font-weight: 600; text-transform: uppercase; margin-bottom: 8px; }
+
+/* ── Heatmap ── */
+.tp-heatmap { overflow-x: auto; }
+.tp-heatmap-inner { display: inline-flex; flex-direction: column; gap: 2px; }
+.tp-hm-months { display: flex; gap: 0; font-size: 10px; color: var(--dim); margin-bottom: 2px; padding-left: 28px; }
+.tp-hm-row { display: flex; align-items: center; gap: 2px; }
+.tp-hm-day-label { width: 24px; font-size: 10px; color: var(--dim); text-align: right; flex-shrink: 0; }
+.tp-hm-cell { width: 12px; height: 12px; border-radius: 2px; transition: transform 0.15s; cursor: pointer; position: relative; }
+.tp-hm-cell:hover { transform: scale(1.6); z-index: 10; }
+.tp-hm-cell[title]:hover::after { content: attr(title); position: absolute; bottom: calc(100% + 4px); left: 50%; transform: translateX(-50%); background: var(--bg2); color: var(--white); padding: 2px 8px; border-radius: 4px; font-size: 10px; white-space: nowrap; z-index: 100; border: 1px solid var(--border); pointer-events: none; }
+.tp-hm-legend { display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--dim); margin-top: 6px; justify-content: flex-end; }
+.tp-hm-legend-cell { width: 12px; height: 12px; border-radius: 2px; }
+
+/* ── Trend bars ── */
+.tp-trend-bars { display: flex; align-items: flex-end; gap: 3px; height: 140px; position: relative; padding-bottom: 20px; }
+.tp-trend-bar-wrap { flex: 1; display: flex; flex-direction: column; position: relative; min-width: 0; }
+.tp-trend-bar { position: relative; border-radius: 3px 3px 0 0; transition: all 0.15s; cursor: pointer; min-height: 4px; }
+.tp-trend-bar:hover { filter: brightness(1.3); }
+.tp-trend-bar:hover::after { content: attr(data-tip); position: absolute; bottom: calc(100% + 4px); left: 50%; transform: translateX(-50%); background: var(--bg2); color: var(--white); padding: 2px 8px; border-radius: 4px; font-size: 10px; white-space: nowrap; z-index: 100; border: 1px solid var(--border); pointer-events: none; }
+.tp-trend-label { font-size: 9px; color: var(--dim); text-align: center; position: absolute; bottom: 0; width: 100%; white-space: nowrap; overflow: hidden; }
+.tp-trend-grid-lines { position: absolute; inset: 0 0 20px 0; display: flex; flex-direction: column; justify-content: space-between; pointer-events: none; }
+.tp-trend-grid-line { width: 100%; border-top: 1px dashed var(--border); opacity: 0.4; }
+
+/* ── Detail table ── */
+.tp-tabs { display: flex; gap: 2px; }
+.tp-tab { padding: 5px 12px; cursor: pointer; border-radius: 6px 6px 0 0; background: var(--bg3); color: var(--dim); border: 1px solid var(--border); border-bottom: none; font-size: 12px; font-weight: 500; }
+.tp-tab.active { background: var(--bg2); color: var(--white); font-weight: 600; }
+.tp-tc { display: none; }
+.tp-tc.active { display: block; }
+.tp-st { max-height: 480px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
+.tp-table { width: 100%; border-collapse: collapse; font-size: 11px; background: var(--bg2); }
+.tp-table th { background: var(--bg3); color: var(--white); padding: 7px 10px; text-align: left; font-weight: 600; white-space: nowrap; }
+.tp-table td { padding: 6px 10px; border-top: 1px solid var(--border); white-space: nowrap; font-family: monospace; color: var(--text); }
+.tp-table tr:hover td { background: var(--bg3); }
+.tp-table tfoot td { font-weight: 700; background: var(--bg3); }
+.tp-mtag { display: inline-block; padding: 1px 6px; border-radius: 3px; border: 1px solid; font-size: 10px; margin: 1px; font-weight: 500; }
+.tp-mbreak { white-space: normal; min-width: 200px; }
 
 /* ── Stream panel ── */
 #stream-panel-wrap {
@@ -455,18 +488,24 @@ body {
 </div>
 
 <div id="tokens-page" style="display:none">
-  <div class="token-card" id="token-overview">
-    <div class="token-card-title">📊 Token Overview</div>
-    <div class="token-grid" id="token-overview-grid"></div>
+  <!-- Top row: left sidebar + right content -->
+  <div class="tp-top">
+    <div class="tp-left">
+      <div class="tp-box" id="tp-total-card"></div>
+      <div class="tp-box" id="tp-stats-grid"></div>
+      <div class="tp-box" id="tp-model-rank"></div>
+    </div>
+    <div class="tp-right">
+      <div class="tp-box" id="tp-trend-card"></div>
+      <div class="tp-box" id="tp-heatmap-card"></div>
+    </div>
   </div>
-  <div class="token-section-title">按 Agent 分项</div>
-  <div id="token-agent-cards"></div>
-  <div class="token-section-title" style="cursor:pointer" onclick="toggleTokenTable()" id="token-table-toggle">明细表格 ▸</div>
-  <div id="token-table-wrap" style="display:none">
-    <table class="token-table" id="token-detail-table">
-      <thead><tr><th>Agent</th><th>Model</th><th>Input</th><th>Output</th><th>Cache+</th><th>Cache Read</th><th>Context</th><th>%</th><th>I/O</th></tr></thead>
-      <tbody id="token-table-body"></tbody>
-    </table>
+  <!-- Detail table -->
+  <div class="tp-box">
+    <div class="tp-tabs" id="tp-detail-tabs"></div>
+    <div id="tp-tc-daily" class="tp-tc"><div class="tp-st" id="tp-daily-table"></div></div>
+    <div id="tp-tc-weekly" class="tp-tc"><div class="tp-st" id="tp-weekly-table"></div></div>
+    <div id="tp-tc-monthly" class="tp-tc"><div class="tp-st" id="tp-monthly-table"></div></div>
   </div>
 </div>
 
@@ -563,6 +602,7 @@ let showTokenCount = true;
 let autoDiscovery = true;
 let appVersion = '';
 let currentTab = 'stream';
+let tokenStatsData = { totals: { messages: 0, input: 0, output: 0, cacheCreation: 0, cacheRead: 0, days: 0 }, modelTotals: {}, daily: {} };
 
 const HIDDEN_KEY = 'claude-watch-hidden';
 function loadHiddenSessions() {
@@ -723,7 +763,8 @@ function handleMessage(msg) {
     case 'newBackgroundTask': handleNewBgTask(msg.payload); break;
     case 'sessionRemoved': handleSessionRemoved(msg.payload); break;
     case 'autoDiscoveryChanged': autoDiscovery = msg.payload.enabled; scheduleRender(); break;
-    case 'context': contextData = msg.payload; updateTreeDots(); refreshButtons(); if (currentTab === 'tokens') renderTokenPage(); break;
+    case 'context': contextData = msg.payload; updateTreeDots(); refreshButtons(); break;
+    case 'tokenStats': tokenStatsData = msg.payload; if (currentTab === 'tokens') renderTokenPage(); break;
     case 'config':
       if (msg.payload.version) appVersion = msg.payload.version;
       if (msg.payload.collapseAfter > 0 && !collapseTimer) {
@@ -1679,8 +1720,30 @@ function toggleTokenDisplay() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Tab switching & Token page
+// Tab switching & Token stats page
 // ══════════════════════════════════════════════════════════════════════════════
+// Token Statistics (completely independent from stream/context)
+// ══════════════════════════════════════════════════════════════════════════════
+
+const MODEL_COLORS = {
+  'claude-opus-4-7': '#e74c3c', 'claude-opus-4-6': '#c0392b', 'claude-opus-4-8': '#e67e22',
+  'claude-sonnet-4-6': '#3498db', 'claude-sonnet-4-5': '#2980b9',
+  'claude-haiku-4-5': '#5dade2', 'claude-haiku-4': '#1abc9c',
+  'glm-5.1': '#2980b9', 'glm-5': '#3498db', 'glm-4.7': '#5dade2',
+  'qwen3.7-max': '#55efc4', 'qwen3.6-plus': '#2ecc71', 'qwen3.5-plus': '#27ae60',
+  'qwen3-max': '#1abc9c',
+  'deepseek-v4-pro': '#9b59b6',
+  'kimi-k2.5': '#f39c12', 'kimi-k2.6': '#d35400', 'kimi-k2-thinking': '#d4a017',
+  'MiniMax-M2.5': '#1abc9c',
+};
+let _modelColorIdx = 0;
+function modelColor(name) {
+  if (MODEL_COLORS[name]) return MODEL_COLORS[name];
+  const fallback = ['#e74c3c','#3498db','#2ecc71','#9b59b6','#f39c12','#1abc9c','#e67e22','#c0392b','#5dade2','#d35400','#55efc4','#d4a017'];
+  return fallback[_modelColorIdx++ % fallback.length];
+}
+
+let tsDetailTab = 'daily';
 
 function switchTab(tab) {
   currentTab = tab;
@@ -1688,95 +1751,332 @@ function switchTab(tab) {
   document.getElementById('tokens-page').style.display = tab === 'tokens' ? 'flex' : 'none';
   document.getElementById('tab-stream').classList.toggle('on', tab === 'stream');
   document.getElementById('tab-tokens').classList.toggle('on', tab === 'tokens');
-  // footer 只在 stream 模式下有意义
   document.getElementById('footer').style.display = tab === 'stream' ? 'flex' : 'none';
   if (tab === 'tokens') renderTokenPage();
 }
 
-let tokenTableVisible = false;
-function toggleTokenTable() {
-  tokenTableVisible = !tokenTableVisible;
-  document.getElementById('token-table-wrap').style.display = tokenTableVisible ? 'block' : 'none';
-  document.getElementById('token-table-toggle').textContent = '明细表格 ' + (tokenTableVisible ? '▾' : '▸');
+function tsSwitchDetail(n) {
+  tsDetailTab = n;
+  document.querySelectorAll('.tp-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tp-tc').forEach(t => t.classList.remove('active'));
+  document.querySelector(`.tp-tab[data-tab="${n}"]`)?.classList.add('active');
+  document.getElementById('tp-tc-' + n)?.classList.add('active');
 }
 
+function fmtTS(n) {
+  if (!n) return '0';
+  return n.toLocaleString();
+}
+
+function fmtDateISO(d) {
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+// ── Heatmap: 52-week × 7-day GitHub-style grid ──
+function buildHeatmap(daily) {
+  const today = new Date();
+  const dailyTotalsMap = {};
+  for (const [k, d] of Object.entries(daily)) {
+    dailyTotalsMap[k] = d.input + d.output + d.cacheCreation + d.cacheRead;
+  }
+
+  // Start 52 weeks ago from Sunday
+  const startSunday = new Date(today);
+  startSunday.setDate(startSunday.getDate() - startSunday.getDay() - 52 * 7);
+  const startStr = fmtDateISO(startSunday);
+
+  // Compute maxVal only from dates within the heatmap window
+  let maxVal = 0;
+  for (const [k, v] of Object.entries(dailyTotalsMap)) {
+    if (k >= startStr && v > maxVal) maxVal = v;
+  }
+
+  const weeks = [];
+  const monthLabels = [];
+  let lastMonth = -1;
+  let currentSunday = new Date(startSunday);
+
+  for (let w = 0; w < 53; w++) {
+    const weekData = [];
+    for (let dow = 0; dow < 7; dow++) {
+      const d = new Date(currentSunday);
+      d.setDate(d.getDate() + dow);
+      const ds = fmtDateISO(d);
+      const val = dailyTotalsMap[ds] || 0;
+      weekData.push({ date: ds, val, future: d > today });
+      if (dow === 0) {
+        const m = d.getMonth();
+        if (m !== lastMonth) { monthLabels.push({ month: m, week: w }); lastMonth = m; }
+      }
+    }
+    weeks.push(weekData);
+    currentSunday.setDate(currentSunday.getDate() + 7);
+  }
+
+  function cellColor(val, future) {
+    if (future) return 'var(--bg3)';
+    if (val === 0) return '#0d423d';
+    const pct = maxVal > 0 ? val / maxVal : 0;
+    if (pct < 0.25) return '#0e6b5a';
+    if (pct < 0.5) return '#12b886';
+    if (pct < 0.75) return '#34d399';
+    return '#6ee7b7';
+  }
+
+  const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  let monthsHTML = '<div class="tp-hm-months">';
+  let prevWeek = 0;
+  for (const ml of monthLabels) {
+    const offset = ml.week - prevWeek;
+    if (offset > 0) monthsHTML += `<span style="width:${offset * 14}px"></span>`;
+    monthsHTML += `<span style="width:14px">${monthNames[ml.month]}</span>`;
+    prevWeek = ml.week + 1;
+  }
+  monthsHTML += '</div>';
+
+  const dayLabels = ['','Mon','','Wed','','Fri',''];
+  let gridHTML = '';
+  for (let dow = 0; dow < 7; dow++) {
+    gridHTML += `<div class="tp-hm-row"><span class="tp-hm-day-label">${dayLabels[dow]}</span>`;
+    for (let w = 0; w < weeks.length; w++) {
+      const cell = weeks[w][dow];
+      const bg = cellColor(cell.val, cell.future);
+      const tip = `${cell.date} · ${fmtTS(cell.val)} tokens`;
+      gridHTML += `<span class="tp-hm-cell" style="background:${bg}" title="${tip}"></span>`;
+    }
+    gridHTML += '</div>';
+  }
+
+  let legendHTML = '<div class="tp-hm-legend"><span>Less</span>';
+  legendHTML += '<span class="tp-hm-legend-cell" style="background:#0d423d"></span>';
+  legendHTML += '<span class="tp-hm-legend-cell" style="background:#0e6b5a"></span>';
+  legendHTML += '<span class="tp-hm-legend-cell" style="background:#12b886"></span>';
+  legendHTML += '<span class="tp-hm-legend-cell" style="background:#34d399"></span>';
+  legendHTML += '<span class="tp-hm-legend-cell" style="background:#6ee7b7"></span>';
+  legendHTML += '<span>More</span></div>';
+
+  return `<div class="tp-heatmap"><div class="tp-heatmap-inner">${monthsHTML}${gridHTML}</div>${legendHTML}</div>`;
+}
+
+// ── Trend: bar chart for last 30 days ──
+function buildTrend(daily) {
+  const keys = Object.keys(daily).sort();
+  const recentKeys = keys.slice(-30);
+  if (recentKeys.length === 0) return '<div style="color:var(--dim);padding:8px">暂无趋势数据</div>';
+
+  const values = recentKeys.map(k => {
+    const d = daily[k];
+    return d.input + d.output + d.cacheCreation + d.cacheRead;
+  });
+  const maxVal = Math.max(...values);
+
+  let barsHTML = '';
+  for (let i = 0; i < recentKeys.length; i++) {
+    const k = recentKeys[i];
+    const v = values[i];
+    const pct = maxVal > 0 ? (v / maxVal * 100) : 0;
+    const label = k.slice(5);
+    const tip = `${k}: ${fmtTS(v)}`;
+    const color = pct < 30 ? '#0e6b5a' : pct < 60 ? '#12b886' : pct < 80 ? '#34d399' : '#6ee7b7';
+    barsHTML += `<div class="tp-trend-bar-wrap"><div class="tp-trend-bar" style="height:${Math.max(pct, 3)}%;background:${color}" data-tip="${tip}"></div><span class="tp-trend-label">${label}</span></div>`;
+  }
+
+  const gridLines = `<div class="tp-trend-grid-lines">
+    <span style="font-size:9px;color:var(--dim);align-self:flex-start">${fmtTS(maxVal)}</span>
+    <div class="tp-trend-grid-line"></div>
+    <div class="tp-trend-grid-line"></div>
+    <span style="font-size:9px;color:var(--dim);align-self:center">${fmtTS(maxVal * 0.5)}</span>
+    <div class="tp-trend-grid-line"></div>
+    <span style="font-size:9px;color:var(--dim);align-self:flex-end">0</span>
+  </div>`;
+
+  return `<div class="tp-trend-bars">${gridLines}${barsHTML}</div>`;
+}
+
+// ── Model ranking sidebar ──
+function buildModelRank(mt, totalAll) {
+  const sorted = Object.entries(mt).sort((a, b) => {
+    const sA = a[1].input + a[1].output + a[1].cacheCreation + a[1].cacheRead;
+    const sB = b[1].input + b[1].output + b[1].cacheCreation + b[1].cacheRead;
+    return sB - sA;
+  });
+
+  let html = '<div class="tp-rank-title">🏆 Model Ranking</div>';
+  for (let i = 0; i < Math.min(sorted.length, 5); i++) {
+    const [name, m] = sorted[i];
+    const mTotal = m.input + m.output + m.cacheCreation + m.cacheRead;
+    const pct = totalAll > 0 ? (mTotal / totalAll * 100).toFixed(1) : '0';
+    const c = modelColor(name);
+    html += `<div class="tp-rank-item">
+      <span class="tp-rank-num">${i + 1}</span>
+      <span class="tp-rank-dot" style="background:${c}"></span>
+      <span class="tp-rank-name">${esc(name)}</span>
+      <span class="tp-rank-pct">${pct}%</span>
+    </div>`;
+  }
+  return html;
+}
+
+// ── Render entire token page ──
 function renderTokenPage() {
-  computeTokensFromContext();
-  const entries = Object.entries(contextData);
-  if (entries.length === 0) {
-    document.getElementById('token-overview-grid').innerHTML = '<div style="color:var(--dim);padding:8px">暂无 Token 数据</div>';
-    document.getElementById('token-agent-cards').innerHTML = '';
-    document.getElementById('token-table-body').innerHTML = '';
+  const t = tokenStatsData.totals;
+  const mt = tokenStatsData.modelTotals;
+  const daily = tokenStatsData.daily;
+  const totalAll = t.input + t.output + t.cacheCreation + t.cacheRead;
+
+  if (totalAll === 0) {
+    document.getElementById('tp-total-card').innerHTML = '<div style="color:var(--dim);padding:8px">暂无历史 Token 数据</div>';
+    document.getElementById('tp-stats-grid').innerHTML = '';
+    document.getElementById('tp-model-rank').innerHTML = '';
+    document.getElementById('tp-trend-card').innerHTML = '';
+    document.getElementById('tp-heatmap-card').innerHTML = '';
+    document.getElementById('tp-detail-tabs').innerHTML = '';
+    document.getElementById('tp-daily-table').innerHTML = '';
+    document.getElementById('tp-weekly-table').innerHTML = '';
+    document.getElementById('tp-monthly-table').innerHTML = '';
     return;
   }
 
-  // ── Overview card ──
-  const overviewGrid = document.getElementById('token-overview-grid');
-  const overviewItems = [
-    { label: 'Input Tokens', value: fmtTok(totalInput), pct: null },
-    { label: 'Output Tokens', value: fmtTok(totalOutput), pct: null },
-    { label: 'Cache Creation', value: fmtTok(totalCacheCreate), pct: null },
-    { label: 'Cache Read', value: fmtTok(totalCacheRead), pct: null },
-    { label: 'I/O Ratio', value: totalOutput > 0 ? (totalInput / totalOutput).toFixed(1) + ' : 1' : '—', pct: null },
-  ];
-  overviewGrid.innerHTML = overviewItems.map(it =>
-    `<div class="token-item"><span class="token-label">${it.label}</span><span class="token-value">${it.value}</span></div>`
-  ).join('');
+  const inputPct = totalAll > 0 ? (t.input / totalAll * 100).toFixed(1) : '0';
+  const outputPct = totalAll > 0 ? (t.output / totalAll * 100).toFixed(1) : '0';
+  const crPct = totalAll > 0 ? (t.cacheRead / totalAll * 100).toFixed(1) : '0';
+  const ccPct = totalAll > 0 ? (t.cacheCreation / totalAll * 100).toFixed(1) : '0';
+  const dailyAvg = t.days > 0 ? Math.round(totalAll / t.days).toLocaleString() : '—';
 
-  // ── Agent cards ──
-  const agentCardsEl = document.getElementById('token-agent-cards');
-  // Sort by lastActivity descending (active first)
-  const sorted = entries.sort((a, b) => (b[1].lastActivity || 0) - (a[1].lastActivity || 0));
-  agentCardsEl.innerHTML = sorted.map(([key, ctx]) => {
-    const [sid, agentId] = key.split(':');
-    const isMain = agentId === 'main' || !agentId.includes('-');
-    const icon = isMain ? '🗣' : '🤖';
-    const agentName = isMain ? 'Main' : agentId;
-    const active = ctx.lastActivity && (Date.now() - ctx.lastActivity < 180000);
-    const activeDot = active ? '<span class="token-active-dot">🟢</span>' : '<span class="token-active-dot">⚪</span>';
-
-    const pct = ctx.contextWindow > 0 ? Math.round(ctx.inputTokens / ctx.contextWindow * 100) : 0;
-    const pctCls = pct > 80 ? 'danger' : pct > 50 ? 'warn' : '';
-    const barCls = pct > 80 ? 'danger' : pct > 50 ? 'warn' : '';
-    const barWidth = Math.min(pct, 100);
-
-    const ioRatio = ctx.outputTokens > 0 ? (ctx.inputTokens / ctx.outputTokens).toFixed(1) + ' : 1' : '—';
-
-    return `<div class="token-card">
-      <div class="token-card-title">${icon} ${esc(agentName)} ${ctx.model ? '· ' + esc(ctx.model) : ''} ${activeDot}</div>
-      <div class="token-usage-line">
-        <span class="token-pct ${pctCls}">${pct}%</span>
-        <span class="token-ctx-info">${fmtTok(ctx.inputTokens)} / ${fmtTok(ctx.contextWindow)}</span>
-      </div>
-      <div class="token-bar"><div class="token-bar-fill ${barCls}" style="width:${barWidth}%"></div></div>
-      <div class="token-detail-row">
-        <span class="token-kv">Output: <b>${fmtTok(ctx.outputTokens)}</b></span>
-        <span class="token-kv">Cache+: <b>${fmtTok(ctx.cacheCreation)}</b></span>
-        <span class="token-kv">Cache Read: <b>${fmtTok(ctx.cacheRead)}</b></span>
-        <span class="token-kv">I/O: <b>${ioRatio}</b></span>
-      </div>
+  // 1. Total tokens card
+  document.getElementById('tp-total-card').innerHTML = `
+    <div class="tp-total-label">TOTAL TOKENS</div>
+    <div class="tp-total-value">${fmtTS(totalAll)}</div>
+    <div class="tp-footer-stats">
+      <span>Started <span class="tp-fv">${Object.keys(daily).sort()[0] || '—'}</span></span>
+      <span>Active <span class="tp-fv">${t.days} DAY</span></span>
+      <span>Models <span class="tp-fv">${Object.keys(mt).length}</span></span>
     </div>`;
-  }).join('');
 
-  // ── Detail table ──
-  const tbody = document.getElementById('token-table-body');
-  tbody.innerHTML = sorted.map(([key, ctx]) => {
-    const [sid, agentId] = key.split(':');
-    const agentName = (agentId === 'main' || !agentId.includes('-')) ? 'Main' : agentId;
-    const pct = ctx.contextWindow > 0 ? (ctx.inputTokens / ctx.contextWindow * 100).toFixed(1) + '%' : '—';
-    const ioRatio = ctx.outputTokens > 0 ? (ctx.inputTokens / ctx.outputTokens).toFixed(1) : '—';
-    return `<tr>
-      <td>${esc(agentName)}</td>
-      <td>${esc(ctx.model || '—')}</td>
-      <td>${ctx.inputTokens}</td>
-      <td>${ctx.outputTokens}</td>
-      <td>${ctx.cacheCreation}</td>
-      <td>${ctx.cacheRead}</td>
-      <td>${ctx.contextWindow}</td>
-      <td>${pct}</td>
-      <td>${ioRatio}</td>
-    </tr>`;
-  }).join('');
+  // 2. Stats grid
+  const stats = [
+    { l: 'Input', v: fmtTS(t.input), s: inputPct + '%' },
+    { l: 'Output', v: fmtTS(t.output), s: outputPct + '%' },
+    { l: 'Cache Read', v: fmtTS(t.cacheRead), s: crPct + '%' },
+    { l: 'Cache Create', v: fmtTS(t.cacheCreation), s: ccPct + '%' },
+    { l: 'Messages', v: fmtTS(t.messages), s: t.messages.toLocaleString() },
+    { l: 'Daily Avg', v: dailyAvg, s: 'tokens/day' },
+  ];
+  document.getElementById('tp-stats-grid').innerHTML = `<div class="tp-stat-grid">${stats.map(s => `<div class="tp-stat"><div class="tp-s-l">${s.l}</div><div class="tp-s-v">${s.v}</div><div style="font-size:9px;color:var(--dim)">${s.s}</div></div>`).join('')}</div>`;
+
+  // 3. Model ranking
+  document.getElementById('tp-model-rank').innerHTML = buildModelRank(mt, totalAll);
+
+  // 4. Usage Trend
+  document.getElementById('tp-trend-card').innerHTML = `<div class="tp-h3">📊 Usage Trend</div>${buildTrend(daily)}`;
+
+  // 5. Activity Heatmap
+  const tzOffset = -(new Date().getTimezoneOffset() / 60);
+  document.getElementById('tp-heatmap-card').innerHTML = `<div class="tp-h3">🗓 Activity Heatmap</div><span style="font-size:10px;color:var(--dim);float:right">UTC+${tzOffset.toFixed(0)}</span>${buildHeatmap(daily)}`;
+
+  // 6. Detail tabs
+  const dailyKeys = Object.keys(daily);
+  const weeklyCount = weeklyKeysFromDaily(dailyKeys).length;
+  const monthlyCount = monthlyKeysFromDaily(dailyKeys).length;
+  document.getElementById('tp-detail-tabs').innerHTML = `<div class="tp-tab ${tsDetailTab === 'daily' ? 'active' : ''}" data-tab="daily" onclick="tsSwitchDetail('daily')">Daily Breakdown (${dailyKeys.length})</div><div class="tp-tab ${tsDetailTab === 'weekly' ? 'active' : ''}" data-tab="weekly" onclick="tsSwitchDetail('weekly')">Weekly (${weeklyCount})</div><div class="tp-tab ${tsDetailTab === 'monthly' ? 'active' : ''}" data-tab="monthly" onclick="tsSwitchDetail('monthly')">Monthly (${monthlyCount})</div>`;
+  document.querySelectorAll('.tp-tc').forEach(tc => tc.classList.remove('active'));
+  document.getElementById('tp-tc-' + tsDetailTab)?.classList.add('active');
+
+  document.getElementById('tp-daily-table').innerHTML = renderPeriodTable(dailyKeys, daily, 'daily');
+  const weekly = aggregateWeekly(dailyKeys, daily);
+  document.getElementById('tp-weekly-table').innerHTML = renderPeriodTable(Object.keys(weekly), weekly, 'weekly');
+  const monthly = aggregateMonthly(dailyKeys, daily);
+  document.getElementById('tp-monthly-table').innerHTML = renderPeriodTable(Object.keys(monthly), monthly, 'monthly');
+}
+
+function weeklyKeysFromDaily(keys) {
+  const weeks = new Set();
+  for (const k of keys) { const d = new Date(k); const wk = getWeekKey(d); weeks.add(wk); }
+  return [...weeks];
+}
+function monthlyKeysFromDaily(keys) {
+  const months = new Set();
+  for (const k of keys) { months.add(k.slice(0, 7)); }
+  return [...months];
+}
+
+function getWeekKey(d) {
+  const dayNum = d.getDay() || 7; // Sunday (0) becomes 7 for ISO week calculation
+  const thursday = new Date(d);
+  thursday.setDate(d.getDate() + 4 - dayNum); // ISO Thursday offset
+  const year = thursday.getFullYear();
+  const jan1 = new Date(year, 0, 1);
+  const wk = Math.ceil(((thursday - jan1) / 86400000 + jan1.getDay() + 1) / 7);
+  return year + '-W' + String(wk).padStart(2, '0');
+}
+
+function aggregateWeekly(dailyKeys, daily) {
+  const result = {};
+  for (const k of dailyKeys) {
+    const d = new Date(k);
+    const wk = getWeekKey(d);
+    if (!result[wk]) result[wk] = { messages: 0, input: 0, output: 0, cacheCreation: 0, cacheRead: 0, models: {}, dateRange: k };
+    else result[wk].dateRange += ' ~ ' + k;
+    const day = daily[k];
+    result[wk].messages += day.messages;
+    result[wk].input += day.input;
+    result[wk].output += day.output;
+    result[wk].cacheCreation += day.cacheCreation;
+    result[wk].cacheRead += day.cacheRead;
+    for (const [mn, m] of Object.entries(day.models)) {
+      if (!result[wk].models[mn]) result[wk].models[mn] = { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 };
+      result[wk].models[mn].input += m.input;
+      result[wk].models[mn].output += m.output;
+      result[wk].models[mn].cacheCreation += m.cacheCreation;
+      result[wk].models[mn].cacheRead += m.cacheRead;
+    }
+  }
+  return result;
+}
+
+function aggregateMonthly(dailyKeys, daily) {
+  const result = {};
+  for (const k of dailyKeys) {
+    const mk = k.slice(0, 7);
+    if (!result[mk]) result[mk] = { messages: 0, input: 0, output: 0, cacheCreation: 0, cacheRead: 0, models: {}, dateRange: k };
+    else result[mk].dateRange += ' ~ ' + k.slice(5);
+    const day = daily[k];
+    result[mk].messages += day.messages;
+    result[mk].input += day.input;
+    result[mk].output += day.output;
+    result[mk].cacheCreation += day.cacheCreation;
+    result[mk].cacheRead += day.cacheRead;
+    for (const [mn, m] of Object.entries(day.models)) {
+      if (!result[mk].models[mn]) result[mk].models[mn] = { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 };
+      result[mk].models[mn].input += m.input;
+      result[mk].models[mn].output += m.output;
+      result[mk].models[mn].cacheCreation += m.cacheCreation;
+      result[mk].models[mn].cacheRead += m.cacheRead;
+    }
+  }
+  return result;
+}
+
+function renderPeriodTable(keys, data, type) {
+  const sorted = keys.sort((a, b) => b.localeCompare(a));
+  let html = '<table class="tp-table"><thead><tr><th>Date</th><th>Total</th><th>Input</th><th>Output</th><th>Cache Read</th><th>Cache Create</th><th>Messages</th><th>Models</th></tr></thead><tbody>';
+  for (const k of sorted) {
+    const d = data[k];
+    const total = d.input + d.output + d.cacheCreation + d.cacheRead;
+    const label = type === 'daily' ? k : k + '<br><small style="color:var(--dim)">' + esc(d.dateRange || '') + '</small>';
+    const modelsHtml = Object.entries(d.models).sort((a, b) => {
+      const sA = a[1].input + a[1].output + a[1].cacheCreation + a[1].cacheRead;
+      const sB = b[1].input + b[1].output + b[1].cacheCreation + b[1].cacheRead;
+      return sB - sA;
+    }).slice(0, 4).map(([mn, m]) => {
+      const mT = m.input + m.output + m.cacheCreation + m.cacheRead;
+      const c = modelColor(mn);
+      return `<span class="tp-mtag" style="background:${c}20;border-color:${c};color:${c}">${esc(mn)}: ${fmtTS(mT)}</span>`;
+    }).join(' ');
+    html += `<tr><td>${label}</td><td><b>${fmtTS(total)}</b></td><td>${fmtTS(d.input)}</td><td>${fmtTS(d.output)}</td><td>${fmtTS(d.cacheRead)}</td><td>${fmtTS(d.cacheCreation)}</td><td>${d.messages.toLocaleString()}</td><td class="tp-mbreak">${modelsHtml}</td></tr>`;
+  }
+  html += '</tbody></table>';
+  return html;
 }
 function toggleAutoScroll() { autoScroll = !autoScroll; if (autoScroll) streamEl.scrollTop = streamEl.scrollHeight; renderAll(); }
 function toggleTree() { showTree = !showTree; document.getElementById('tree-panel').classList.toggle('hidden', !showTree); }
