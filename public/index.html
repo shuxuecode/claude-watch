@@ -208,6 +208,33 @@ body {
 .tree-row:hover .tree-actions { display: flex; }
 .tree-row.selected>.tree-actions { display: flex; }
 
+/* ── Tokens page ── */
+#tokens-page { flex: 1; display: flex; flex-direction: column; overflow-y: auto; padding: 16px 24px; gap: 16px; background: var(--bg); }
+.token-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; }
+.token-card-title { font-size: 13px; font-weight: 600; color: var(--white); margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+.token-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+.token-item { display: flex; flex-direction: column; gap: 2px; }
+.token-label { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; }
+.token-value { font-size: 16px; font-weight: 600; color: var(--white); font-family: monospace; }
+.token-bar { height: 4px; border-radius: 2px; background: var(--bg3); margin-top: 4px; }
+.token-bar-fill { height: 100%; border-radius: 2px; background: var(--purple); transition: width 0.3s; }
+.token-bar-fill.warn { background: var(--yellow); }
+.token-bar-fill.danger { background: var(--red); }
+.token-section-title { font-size: 12px; font-weight: 600; color: var(--dim); margin: 8px 0 4px; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+.token-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 4px; }
+.token-table th { background: var(--bg3); color: var(--white); padding: 6px 8px; text-align: left; font-weight: 600; font-size: 11px; border-bottom: 1px solid var(--border); }
+.token-table td { padding: 5px 8px; color: var(--text); border-bottom: 1px solid var(--border); font-family: monospace; }
+.token-table tr:hover td { background: var(--bg3); }
+.token-detail-row { display: flex; gap: 4px; margin-top: 6px; font-size: 12px; flex-wrap: wrap; }
+.token-detail-row .token-kv { color: var(--dim); }
+.token-detail-row .token-kv b { color: var(--text); font-family: monospace; }
+.token-usage-line { display: flex; align-items: baseline; gap: 8px; margin-top: 2px; }
+.token-usage-line .token-pct { font-size: 12px; font-weight: 600; }
+.token-usage-line .token-pct.warn { color: var(--yellow); }
+.token-usage-line .token-pct.danger { color: var(--red); }
+.token-usage-line .token-ctx-info { font-size: 11px; color: var(--dim); }
+.token-active-dot { font-size: 10px; }
+
 /* ── Stream panel ── */
 #stream-panel-wrap {
   flex: 1; display: flex; flex-direction: column; overflow: hidden;
@@ -380,6 +407,9 @@ body {
 <body>
 
 <div id="header">
+  <button class="btn on" id="tab-stream" onclick="switchTab('stream')">📡 Stream</button>
+  <button class="btn" id="tab-tokens" onclick="switchTab('tokens')">📊 Tokens</button>
+  <span class="sep">│</span>
   <button class="btn on" id="btn-thinking" onclick="toggleThinking()" data-tooltip="Toggle thinking">🧠 Thinking</button>
   <button class="btn on" id="btn-tool-input" onclick="toggleToolInput()" data-tooltip="Toggle tool input">🔧 Tools</button>
   <button class="btn on" id="btn-tool-output" onclick="toggleToolOutput()" data-tooltip="Toggle tool output">📤 Output</button>
@@ -421,6 +451,22 @@ body {
       <button class="btn btn-icon" onclick="scrollToBottom()" data-tooltip="Bottom">⏬</button>
     </div>
     <div id="stream-panel" tabindex="0"></div>
+  </div>
+</div>
+
+<div id="tokens-page" style="display:none">
+  <div class="token-card" id="token-overview">
+    <div class="token-card-title">📊 Token Overview</div>
+    <div class="token-grid" id="token-overview-grid"></div>
+  </div>
+  <div class="token-section-title">按 Agent 分项</div>
+  <div id="token-agent-cards"></div>
+  <div class="token-section-title" style="cursor:pointer" onclick="toggleTokenTable()" id="token-table-toggle">明细表格 ▸</div>
+  <div id="token-table-wrap" style="display:none">
+    <table class="token-table" id="token-detail-table">
+      <thead><tr><th>Agent</th><th>Model</th><th>Input</th><th>Output</th><th>Cache+</th><th>Cache Read</th><th>Context</th><th>%</th><th>I/O</th></tr></thead>
+      <tbody id="token-table-body"></tbody>
+    </table>
   </div>
 </div>
 
@@ -516,6 +562,7 @@ let showActivity = true;
 let showTokenCount = true;
 let autoDiscovery = true;
 let appVersion = '';
+let currentTab = 'stream';
 
 const HIDDEN_KEY = 'claude-watch-hidden';
 function loadHiddenSessions() {
@@ -546,8 +593,8 @@ function computeTokensFromContext() {
   for (const ctx of Object.values(contextData)) {
     totalInput += ctx.inputTokens || 0;
     totalOutput += ctx.outputTokens || 0;
-    totalCacheCreate += ctx.cacheCreationTokens || 0;
-    totalCacheRead += ctx.cacheReadTokens || 0;
+    totalCacheCreate += ctx.cacheCreation || 0;
+    totalCacheRead += ctx.cacheRead || 0;
   }
 }
 
@@ -676,7 +723,7 @@ function handleMessage(msg) {
     case 'newBackgroundTask': handleNewBgTask(msg.payload); break;
     case 'sessionRemoved': handleSessionRemoved(msg.payload); break;
     case 'autoDiscoveryChanged': autoDiscovery = msg.payload.enabled; scheduleRender(); break;
-    case 'context': contextData = msg.payload; updateTreeDots(); refreshButtons(); break;
+    case 'context': contextData = msg.payload; updateTreeDots(); refreshButtons(); if (currentTab === 'tokens') renderTokenPage(); break;
     case 'config':
       if (msg.payload.version) appVersion = msg.payload.version;
       if (msg.payload.collapseAfter > 0 && !collapseTimer) {
@@ -1629,6 +1676,107 @@ function toggleTokenDisplay() {
   treeDirty = true;
   scheduleRender();
   refreshButtons();
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Tab switching & Token page
+// ══════════════════════════════════════════════════════════════════════════════
+
+function switchTab(tab) {
+  currentTab = tab;
+  document.getElementById('main').style.display = tab === 'stream' ? 'flex' : 'none';
+  document.getElementById('tokens-page').style.display = tab === 'tokens' ? 'flex' : 'none';
+  document.getElementById('tab-stream').classList.toggle('on', tab === 'stream');
+  document.getElementById('tab-tokens').classList.toggle('on', tab === 'tokens');
+  // footer 只在 stream 模式下有意义
+  document.getElementById('footer').style.display = tab === 'stream' ? 'flex' : 'none';
+  if (tab === 'tokens') renderTokenPage();
+}
+
+let tokenTableVisible = false;
+function toggleTokenTable() {
+  tokenTableVisible = !tokenTableVisible;
+  document.getElementById('token-table-wrap').style.display = tokenTableVisible ? 'block' : 'none';
+  document.getElementById('token-table-toggle').textContent = '明细表格 ' + (tokenTableVisible ? '▾' : '▸');
+}
+
+function renderTokenPage() {
+  computeTokensFromContext();
+  const entries = Object.entries(contextData);
+  if (entries.length === 0) {
+    document.getElementById('token-overview-grid').innerHTML = '<div style="color:var(--dim);padding:8px">暂无 Token 数据</div>';
+    document.getElementById('token-agent-cards').innerHTML = '';
+    document.getElementById('token-table-body').innerHTML = '';
+    return;
+  }
+
+  // ── Overview card ──
+  const overviewGrid = document.getElementById('token-overview-grid');
+  const overviewItems = [
+    { label: 'Input Tokens', value: fmtTok(totalInput), pct: null },
+    { label: 'Output Tokens', value: fmtTok(totalOutput), pct: null },
+    { label: 'Cache Creation', value: fmtTok(totalCacheCreate), pct: null },
+    { label: 'Cache Read', value: fmtTok(totalCacheRead), pct: null },
+    { label: 'I/O Ratio', value: totalOutput > 0 ? (totalInput / totalOutput).toFixed(1) + ' : 1' : '—', pct: null },
+  ];
+  overviewGrid.innerHTML = overviewItems.map(it =>
+    `<div class="token-item"><span class="token-label">${it.label}</span><span class="token-value">${it.value}</span></div>`
+  ).join('');
+
+  // ── Agent cards ──
+  const agentCardsEl = document.getElementById('token-agent-cards');
+  // Sort by lastActivity descending (active first)
+  const sorted = entries.sort((a, b) => (b[1].lastActivity || 0) - (a[1].lastActivity || 0));
+  agentCardsEl.innerHTML = sorted.map(([key, ctx]) => {
+    const [sid, agentId] = key.split(':');
+    const isMain = agentId === 'main' || !agentId.includes('-');
+    const icon = isMain ? '🗣' : '🤖';
+    const agentName = isMain ? 'Main' : agentId;
+    const active = ctx.lastActivity && (Date.now() - ctx.lastActivity < 180000);
+    const activeDot = active ? '<span class="token-active-dot">🟢</span>' : '<span class="token-active-dot">⚪</span>';
+
+    const pct = ctx.contextWindow > 0 ? Math.round(ctx.inputTokens / ctx.contextWindow * 100) : 0;
+    const pctCls = pct > 80 ? 'danger' : pct > 50 ? 'warn' : '';
+    const barCls = pct > 80 ? 'danger' : pct > 50 ? 'warn' : '';
+    const barWidth = Math.min(pct, 100);
+
+    const ioRatio = ctx.outputTokens > 0 ? (ctx.inputTokens / ctx.outputTokens).toFixed(1) + ' : 1' : '—';
+
+    return `<div class="token-card">
+      <div class="token-card-title">${icon} ${esc(agentName)} ${ctx.model ? '· ' + esc(ctx.model) : ''} ${activeDot}</div>
+      <div class="token-usage-line">
+        <span class="token-pct ${pctCls}">${pct}%</span>
+        <span class="token-ctx-info">${fmtTok(ctx.inputTokens)} / ${fmtTok(ctx.contextWindow)}</span>
+      </div>
+      <div class="token-bar"><div class="token-bar-fill ${barCls}" style="width:${barWidth}%"></div></div>
+      <div class="token-detail-row">
+        <span class="token-kv">Output: <b>${fmtTok(ctx.outputTokens)}</b></span>
+        <span class="token-kv">Cache+: <b>${fmtTok(ctx.cacheCreation)}</b></span>
+        <span class="token-kv">Cache Read: <b>${fmtTok(ctx.cacheRead)}</b></span>
+        <span class="token-kv">I/O: <b>${ioRatio}</b></span>
+      </div>
+    </div>`;
+  }).join('');
+
+  // ── Detail table ──
+  const tbody = document.getElementById('token-table-body');
+  tbody.innerHTML = sorted.map(([key, ctx]) => {
+    const [sid, agentId] = key.split(':');
+    const agentName = (agentId === 'main' || !agentId.includes('-')) ? 'Main' : agentId;
+    const pct = ctx.contextWindow > 0 ? (ctx.inputTokens / ctx.contextWindow * 100).toFixed(1) + '%' : '—';
+    const ioRatio = ctx.outputTokens > 0 ? (ctx.inputTokens / ctx.outputTokens).toFixed(1) : '—';
+    return `<tr>
+      <td>${esc(agentName)}</td>
+      <td>${esc(ctx.model || '—')}</td>
+      <td>${ctx.inputTokens}</td>
+      <td>${ctx.outputTokens}</td>
+      <td>${ctx.cacheCreation}</td>
+      <td>${ctx.cacheRead}</td>
+      <td>${ctx.contextWindow}</td>
+      <td>${pct}</td>
+      <td>${ioRatio}</td>
+    </tr>`;
+  }).join('');
 }
 function toggleAutoScroll() { autoScroll = !autoScroll; if (autoScroll) streamEl.scrollTop = streamEl.scrollHeight; renderAll(); }
 function toggleTree() { showTree = !showTree; document.getElementById('tree-panel').classList.toggle('hidden', !showTree); }
