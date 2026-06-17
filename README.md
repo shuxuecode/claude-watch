@@ -9,7 +9,12 @@ Claude Code writes detailed JSONL logs under `~/.claude/projects/` as it works �
 ## Features
 
 - **Real-time streaming** — thinking, tool calls, tool results, and text responses appear as they happen
-- **Multi-session** — watch all Claude Code sessions in a tree view, grouped by date; active sessions stay flat regardless of age
+- **Multi-session** — watch all Claude Code sessions in a tree view, grouped by date (plus a dedicated **Observer** folder for observer sessions); active sessions stay flat regardless of age
+- **Observer session support** — automatically detects observer sessions (`.claude/mem/observer/sessions`) and shows them under a dedicated **Observer** folder with the real working directory and observed request in tooltips
+- **Token statistics page** — independent Tokens tab with total usage, input/output/cache read/cache creation, message count, model ranking, usage trends, 52-week activity heatmap, hourly distribution, and daily/weekly/monthly breakdowns
+- **Hash routing** — URL hash syncs with the current tab (`#stream` / `#tokens`), so refresh and browser back/forward keep your place
+- **Dark / light theme** — one-click theme toggle with localStorage persistence
+- **Version check** — automatically checks npm for newer versions and shows an update badge in the footer; run `claude-watch update` to upgrade from the CLI
 - **Subagent tracking** — see subagent activity nested under their parent session
 - **Color-coded session tags** — each session gets a unique colored hash prefix for easy visual distinction
 - **Agent-level activity** — active dots on agent/main nodes (not just sessions) with configurable thresholds
@@ -61,8 +66,12 @@ OPTIONS:
     -c <dur>             Auto-collapse sessions inactive for this duration (e.g. 2m)
     -D                   Debug: show raw type:subtype for every JSONL line we'd drop
     --poll <ms>          Polling interval in milliseconds (default: 500)
+    --no-open            Do not auto-open browser on start
     -v                   Show version
     -h, --help           Show this help
+
+Subcommands:
+    update               Check for latest version and install it globally
 ```
 
 ### Examples
@@ -82,6 +91,12 @@ claude-code-watch -n
 
 # Custom port and host
 claude-code-watch -p 8080 --host 0.0.0.0
+
+# Do not auto-open browser
+claude-code-watch --no-open
+
+# Upgrade to the latest version
+claude-code-watch update
 
 # Limit tree to 5 most recent sessions, auto-collapse after 2m of inactivity
 claude-code-watch -m 5 -c 2m
