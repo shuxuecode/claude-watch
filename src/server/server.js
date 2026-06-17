@@ -7,11 +7,34 @@ var os = require('os');
 var cp = require('child_process');
 var readline = require('readline');
 var { WebSocketServer } = require('ws');
+var { compareVersions } = require('../cli-helpers');
 var { Watcher, listSessions, listActiveSessions } = require('../watcher/watcher');
 var { setDebugAll, contextWindowFor } = require('../parser/parser');
 var { fullScanTokenUsage } = require('../scanner/scanner');
 
 var PACKAGE_VERSION = require('../../package.json').version;
+
+function fetchLatestVersion() {
+  return new Promise(function(resolve, reject) {
+    var opts = {
+      hostname: 'registry.npmjs.org',
+      path: '/claude-code-watch/latest',
+      timeout: 5000,
+    };
+    var req = require('https').get(opts, function(res) {
+      if (res.statusCode !== 200) { reject(new Error('HTTP ' + res.statusCode)); return; }
+      var data = '';
+      res.on('data', function(chunk) { data += chunk; });
+      res.on('end', function() {
+        try { resolve(JSON.parse(data).version); }
+        catch (err) { reject(err); }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', function() { req.destroy(); reject(new Error('timeout')); });
+    req.end();
+  });
+}
 
 var MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -40,14 +63,22 @@ class DashboardServer {
     this._flushTimer = null;
     this._tokenStatsDirty = false;
 
+    // Incremental last-activity tracking: "sessionID:agentID" → { toolName, content }
+    this.lastActivities = new Map();
+
     // Time-series token stats: daily aggregation (never cleaned up)
     // Key: "YYYY-MM-DD", value: { messages, input, output, cacheCreation, cacheRead, models: { modelName: { input, output, cacheCreation, cacheRead } } }
     this.dailyStats = new Map();
+
+    // Hourly distribution: 24-hour array of API call counts (local timezone)
+    this.hourlyStats = new Array(24).fill(0);
 
     this.server = null;
     this.wss = null;
     this._heartbeatTimer = null;
     this._allowedPrefix = null;
+    this.latestVersion = null;
+    this._versionCheckTimer = null;
 
     setDebugAll(options.debugAll || false);
     this.debugAll = options.debugAll || false;
@@ -113,6 +144,12 @@ class DashboardServer {
       if (item.outputTokens) day.output += item.outputTokens;
       if (item.cacheCreationTokens) day.cacheCreation += item.cacheCreationTokens;
       if (item.cacheReadTokens) day.cacheRead += item.cacheReadTokens;
+
+      // Hourly distribution: increment the hour bucket
+      const tsDate = new Date(this.itemTime(item));
+      if (!isNaN(tsDate.getTime())) {
+        this.hourlyStats[tsDate.getHours()]++;
+      }
 
       // Per-model breakdown within this day
       if (item.model) {
@@ -192,6 +229,7 @@ class DashboardServer {
       totals: { messages: totalMessages, input: totalInput, output: totalOutput, cacheCreation: totalCacheCreation, cacheRead: totalCacheRead, days: this.dailyStats.size },
       modelTotals,
       daily,
+      hourly: this.hourlyStats,
     };
   }
 
@@ -220,9 +258,16 @@ class DashboardServer {
     const ext = path.extname(filePath).toLowerCase();
     try {
       const data = await fs.promises.readFile(filePath);
+      // Vendor files (highlight.js, marked, DOMPurify, CSS) are versioned with the
+      // package and rarely change — cache for 1 year. Everything else (index.html,
+      // favicon) stays no-cache to ensure users always get the latest.
+      const isVendor = filePath.includes('/vendor/');
+      const cacheControl = isVendor
+        ? 'public, max-age=31536000, immutable'
+        : 'no-cache, no-store, must-revalidate';
       res.writeHead(200, {
         'Content-Type': MIME[ext] || 'application/octet-stream',
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Cache-Control': cacheControl,
       });
       res.end(data);
     } catch {
@@ -275,6 +320,9 @@ class DashboardServer {
         sessions: this.watcher ? this.watcher.getSessionsSnapshot().map(s => ({
           id: s.id,
           projectPath: s.projectPath,
+          realCwd: s.realCwd,
+          isObserver: s.isObserver,
+          observedRequest: s.observedRequest,
           agentCount: Object.keys(s.subagents).length,
           taskCount: Object.keys(s.backgroundTasks).length,
         })) : [],
@@ -392,9 +440,12 @@ class DashboardServer {
     const sessions = this.watcher.getSessionsSnapshot().map(s => ({
       id: s.id,
       projectPath: s.projectPath,
+      realCwd: s.realCwd,
+      isObserver: s.isObserver,
+      observedRequest: s.observedRequest,
       birthtimeMs: s.birthtimeMs || 0,
       subagents: Object.entries(s.subagentTypes || s.subagents || {}).reduce((acc, [id, type]) => {
-        acc[id] = typeof type === 'string' ? type : '';
+        acc[id] = { type: typeof type === 'string' ? type : '', birthtimeMs: (s.subagentBirthtimes && s.subagentBirthtimes[id]) || 0 };
         return acc;
       }, {}),
       backgroundTasks: Object.entries(s.backgroundTasks || {}).map(([id, t]) => ({
@@ -405,15 +456,10 @@ class DashboardServer {
         isComplete: t.isComplete,
       })),
     }));
-    // Compute last activity per agent from itemBuffer (handles skipped history)
+    // Use incrementally maintained lastActivities map (O(1) instead of O(itemBuffer))
     const lastActivities = {};
-    for (const item of this.itemBuffer) {
-      const actKey = item.sessionID + ':' + (item.agentID || '');
-      if (item.type === 'user_text') {
-        lastActivities[actKey] = { toolName: '', content: (item.content || '').slice(0, 200) };
-      } else if (item.type === 'tool_input' && item.agentID) {
-        lastActivities[actKey] = { toolName: item.toolName || '', content: (item.content || '').slice(0, 200) };
-      }
+    for (const [key, val] of this.lastActivities) {
+      lastActivities[key] = val;
     }
     this.send(ws, 'snapshot', {
       sessions,
@@ -431,7 +477,17 @@ class DashboardServer {
   }
 
   sendConfig(ws) {
-    this.send(ws, 'config', { collapseAfter: this.collapseAfterMs, version: PACKAGE_VERSION });
+    this.send(ws, 'config', { collapseAfter: this.collapseAfterMs, version: PACKAGE_VERSION, latestVersion: this.latestVersion });
+  }
+
+  _checkLatestVersion() {
+    fetchLatestVersion().then((latest) => {
+      if (compareVersions(latest, PACKAGE_VERSION) > 0) {
+        this.latestVersion = latest;
+        // Notify all connected clients
+        this.broadcast('config', { collapseAfter: this.collapseAfterMs, version: PACKAGE_VERSION, latestVersion: latest });
+      }
+    }).catch(() => { /* network unavailable, skip */ });
   }
 
   setupWatcher(watcherOpts) {
@@ -442,6 +498,9 @@ class DashboardServer {
       for (const key of this.contextMap.keys()) {
         if (key.startsWith(sessionID + ':')) this.contextMap.delete(key);
       }
+      for (const key of this.lastActivities.keys()) {
+        if (key.startsWith(sessionID + ':')) this.lastActivities.delete(key);
+      }
     });
 
     const FLUSH_BATCH_LIMIT = 50;
@@ -451,6 +510,16 @@ class DashboardServer {
         this.itemBuffer = this.itemBuffer.slice(-MAX_ITEM_BUFFER);
       }
       this.updateContext(item);
+
+      // Incrementally track last activity per agent
+      if (item.type === 'user_text') {
+        const actKey = item.sessionID + ':' + (item.agentID || '');
+        this.lastActivities.set(actKey, { toolName: '', content: (item.content || '').slice(0, 200) });
+      } else if (item.type === 'tool_input' && item.agentID) {
+        const actKey = item.sessionID + ':' + item.agentID;
+        this.lastActivities.set(actKey, { toolName: item.toolName || '', content: (item.content || '').slice(0, 200) });
+      }
+
       this._pendingItems.push(item);
       // Track if any item in this batch has token data (for tokenStats broadcast)
       if (item.inputTokens || item.outputTokens || item.cacheCreationTokens || item.cacheReadTokens) {
@@ -462,6 +531,7 @@ class DashboardServer {
         const batch = this._pendingItems;
         this._pendingItems = [];
         this.broadcast('itemBatch', batch);
+        this.broadcast('context', this.getContextSnapshot());
         if (this._tokenStatsDirty) {
           this._tokenStatsDirty = false;
           this.broadcast('tokenStats', this.getTokenStatsSnapshot());
@@ -476,6 +546,7 @@ class DashboardServer {
           } else if (batch.length > 1) {
             this.broadcast('itemBatch', batch);
           }
+          this.broadcast('context', this.getContextSnapshot());
           if (this._tokenStatsDirty) {
             this._tokenStatsDirty = false;
             this.broadcast('tokenStats', this.getTokenStatsSnapshot());
@@ -606,14 +677,17 @@ class DashboardServer {
     // This runs BEFORE watcher starts, scanning ALL files regardless of age
     console.log('  Scanning historical token data...');
     try {
-      const scannedDaily = await fullScanTokenUsage((done, total) => {
+      const scanned = await fullScanTokenUsage((done, total) => {
         if (total > 0 && (done % 100 === 0 || done === total)) {
           console.log(`  Scanned ${done}/${total} files...`);
         }
       });
-      // Merge scanned data into this.dailyStats
-      for (const [dateStr, day] of scannedDaily) {
+      // Merge scanned data into this.dailyStats and this.hourlyStats
+      for (const [dateStr, day] of scanned.dailyStats) {
         this.dailyStats.set(dateStr, day);
+      }
+      for (let h = 0; h < 24; h++) {
+        this.hourlyStats[h] += scanned.hourlyStats[h];
       }
       const totalDays = this.dailyStats.size;
       const totalMsgs = [...this.dailyStats.values()].reduce((s, d) => s + d.messages, 0);
@@ -636,6 +710,10 @@ class DashboardServer {
 
     this._contextCleanupTimer = setInterval(() => this.cleanupContextMap(), CONTEXT_STALE_MS);
     this._heartbeatTimer = setInterval(() => this.broadcast('heartbeat', null), 30000);
+
+    // Check for latest version on startup and periodically (every hour)
+    this._checkLatestVersion();
+    this._versionCheckTimer = setInterval(() => this._checkLatestVersion(), 60 * 60 * 1000);
 
     // Start listening and wait for server to be ready before opening browser
     await new Promise((resolve) => {
@@ -669,6 +747,7 @@ class DashboardServer {
   stop() {
     if (this._contextCleanupTimer) clearInterval(this._contextCleanupTimer);
     if (this._heartbeatTimer) clearInterval(this._heartbeatTimer);
+    if (this._versionCheckTimer) clearInterval(this._versionCheckTimer);
     if (this._flushTimer) {
       clearTimeout(this._flushTimer);
       this._flushTimer = null;

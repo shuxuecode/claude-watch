@@ -122,6 +122,33 @@ async function readAgentType(jsonlPath) {
   }
 }
 
+async function detectObserverSession(mainFile) {
+  const result = { realCwd: '', isObserver: false, observedRequest: '' };
+  try {
+    const input = fs.createReadStream(mainFile, { encoding: 'utf-8' });
+    const rl = readline.createInterface({ input, crlfDelay: Infinity });
+    const lines = [];
+    for await (const line of rl) {
+      lines.push(line);
+      if (lines.length >= 40) break;
+    }
+    for (const line of lines) {
+      const items = parseLine(line);
+      for (const item of items) {
+        if (item.type === 'observer_meta') {
+          result.isObserver = true;
+          if (item.realCwd && !result.realCwd) result.realCwd = item.realCwd;
+          if (item.observedRequest && !result.observedRequest) result.observedRequest = item.observedRequest;
+        }
+      }
+      if (result.isObserver && result.realCwd && result.observedRequest) break;
+    }
+  } catch {
+    // ignore
+  }
+  return result;
+}
+
 // ============================================================================
 // Session class
 // ============================================================================
@@ -132,8 +159,12 @@ class Session {
     this.projectPath = projectPath;
     this.mainFile = mainFile;
     this.birthtimeMs = birthtimeMs || 0;
+    this.realCwd = '';
+    this.isObserver = false;
+    this.observedRequest = '';
     this.subagents = {};       // agentID -> file path
     this.subagentTypes = {};   // agentID -> agentType
+    this.subagentBirthtimes = {}; // agentID -> birthtimeMs
     this.backgroundTasks = {}; // toolID -> BackgroundTask
     this.toolIndex = new Map(); // toolID -> { toolName, parentAgentID, hasResult }
     this.toolIndexPopulated = false;
@@ -261,6 +292,10 @@ class Watcher extends EventEmitter {
     const projectPath = await resolveProjectPath(projectDir);
 
     const session = new Session(id, projectPath, mainFile, birthtimeMs);
+    const observerInfo = await detectObserverSession(mainFile);
+    session.realCwd = observerInfo.realCwd;
+    session.isObserver = observerInfo.isObserver;
+    session.observedRequest = observerInfo.observedRequest;
 
     // Find subagent files
     const subagentDir = path.join(path.dirname(mainFile), id, 'subagents');
@@ -275,6 +310,10 @@ class Watcher extends EventEmitter {
           if (agentType) {
             session.subagentTypes[agentID] = agentType;
           }
+          try {
+            const agentStats = await fsp.stat(jsonlPath);
+            session.subagentBirthtimes[agentID] = agentStats.birthtimeMs || agentStats.mtimeMs || 0;
+          } catch {}
         }
       }
     } catch (err) {
@@ -310,9 +349,9 @@ class Watcher extends EventEmitter {
         this.sessions.set(session.id, session);
 
         // Broadcast so connected clients learn about the new session
-        this.emit('broadcast', 'newSession', { sessionID: session.id, projectPath: session.projectPath, birthtimeMs: session.birthtimeMs });
+        this.emit('broadcast', 'newSession', { sessionID: session.id, projectPath: session.projectPath, realCwd: session.realCwd, isObserver: session.isObserver, observedRequest: session.observedRequest, birthtimeMs: session.birthtimeMs });
         for (const [agentID, agentType] of Object.entries(session.subagentTypes)) {
-          this.emit('broadcast', 'newAgent', { sessionID: session.id, agentID, agentType });
+          this.emit('broadcast', 'newAgent', { sessionID: session.id, agentID, agentType, birthtimeMs: session.subagentBirthtimes[agentID] || 0 });
         }
 
         const pending = this.pendingSubagents.get(session.id);
@@ -589,7 +628,7 @@ class Watcher extends EventEmitter {
 
     // Broadcast pre-existing subagents to frontend
     for (const [agentID, agentType] of Object.entries(session.subagentTypes)) {
-      this.emit('broadcast', 'newAgent', { sessionID: session.id, agentID, agentType });
+      this.emit('broadcast', 'newAgent', { sessionID: session.id, agentID, agentType, birthtimeMs: session.subagentBirthtimes[agentID] || 0 });
     }
 
     // Read initial data from the new session's files
@@ -636,9 +675,13 @@ class Watcher extends EventEmitter {
 
     session.subagents[agentID] = p;
     if (agentType) session.subagentTypes[agentID] = agentType;
+    try {
+      const agentStats = await fsp.stat(p);
+      session.subagentBirthtimes[agentID] = agentStats.birthtimeMs || agentStats.mtimeMs || 0;
+    } catch {}
 
     this._addFileWatch(p, sessionID, agentID);
-    this.emit('broadcast', 'newAgent', { sessionID, agentID, agentType });
+    this.emit('broadcast', 'newAgent', { sessionID, agentID, agentType, birthtimeMs: session.subagentBirthtimes[agentID] || 0 });
 
     // Read initial data from the new subagent file
     if (this.useFsnotify) {
@@ -726,7 +769,7 @@ class Watcher extends EventEmitter {
       this.emit('broadcast', 'newSession', { sessionID: c.session.id, projectPath: c.session.projectPath, birthtimeMs: c.session.birthtimeMs });
 
       for (const [agentID, agentType] of Object.entries(c.session.subagentTypes)) {
-        this.emit('broadcast', 'newAgent', { sessionID: c.session.id, agentID, agentType });
+        this.emit('broadcast', 'newAgent', { sessionID: c.session.id, agentID, agentType, birthtimeMs: c.session.subagentBirthtimes[agentID] || 0 });
       }
 
       const pending = this.pendingSubagents.get(c.session.id);
@@ -754,8 +797,12 @@ class Watcher extends EventEmitter {
       const agentType = await readAgentType(agentPath);
       session.subagents[agentID] = agentPath;
       if (agentType) session.subagentTypes[agentID] = agentType;
+      try {
+        const agentStats = await fsp.stat(agentPath);
+        session.subagentBirthtimes[agentID] = agentStats.birthtimeMs || agentStats.mtimeMs || 0;
+      } catch {}
 
-      this.emit('broadcast', 'newAgent', { sessionID: session.id, agentID, agentType });
+      this.emit('broadcast', 'newAgent', { sessionID: session.id, agentID, agentType, birthtimeMs: session.subagentBirthtimes[agentID] || 0 });
     }
   }
 
@@ -828,59 +875,66 @@ class Watcher extends EventEmitter {
       ...Object.entries(session.subagents).map(([id, p]) => ({ path: p, agentID: id })),
     ];
 
-    for (const { path: filePath, agentID } of files) {
-      if (!filePath) continue;
-      try {
-        const input = fs.createReadStream(filePath, { encoding: 'utf-8' });
-        const rl = readline.createInterface({ input, crlfDelay: Infinity });
+    // Read all files in parallel — each scans its file independently and writes
+    // to session.toolIndex (safe under Node single-threaded event loop).
+    await Promise.all(files.map(({ path: filePath, agentID }) =>
+      this._scanFileForTools(session, filePath, agentID)
+    ));
 
-        for await (const line of rl) {
-          if (!line.includes('"tool_')) continue;
+    session.toolIndexPopulated = true;
+  }
 
-          if (line.includes('"tool_use"')) {
-            try {
-              var raw = JSON.parse(line);
-              var content = raw.message && raw.message.content;
-              if (!Array.isArray(content)) continue;
-              for (var block of content) {
-                if (block.type !== 'tool_use' || !block.id) continue;
-                if (session.toolIndex.has(block.id)) continue;
-                session.toolIndex.set(block.id, {
-                  toolName: block.name || '',
-                  parentAgentID: agentID,
-                  hasResult: false,
+  async _scanFileForTools(session, filePath, agentID) {
+    if (!filePath) return;
+    try {
+      const input = fs.createReadStream(filePath, { encoding: 'utf-8' });
+      const rl = readline.createInterface({ input, crlfDelay: Infinity });
+
+      for await (const line of rl) {
+        if (!line.includes('"tool_')) continue;
+
+        if (line.includes('"tool_use"')) {
+          try {
+            var raw = JSON.parse(line);
+            var content = raw.message && raw.message.content;
+            if (!Array.isArray(content)) continue;
+            for (var block of content) {
+              if (block.type !== 'tool_use' || !block.id) continue;
+              if (session.toolIndex.has(block.id)) continue;
+              session.toolIndex.set(block.id, {
+                toolName: block.name || '',
+                parentAgentID: agentID,
+                hasResult: false,
+              });
+            }
+          } catch { continue; }
+        }
+
+        if (line.includes('"tool_result"')) {
+          try {
+            var raw2 = JSON.parse(line);
+            var content2 = raw2.message && raw2.message.content;
+            if (!Array.isArray(content2)) continue;
+            for (var block2 of content2) {
+              if (block2.type !== 'tool_result' || !block2.tool_use_id) continue;
+              var tid = block2.tool_use_id;
+              var existing = session.toolIndex.get(tid);
+              if (existing) {
+                existing.hasResult = true;
+              } else {
+                session.toolIndex.set(tid, {
+                  toolName: '',
+                  parentAgentID: '',
+                  hasResult: true,
                 });
               }
-            } catch { continue; }
-          }
-
-          if (line.includes('"tool_result"')) {
-            try {
-              var raw2 = JSON.parse(line);
-              var content2 = raw2.message && raw2.message.content;
-              if (!Array.isArray(content2)) continue;
-              for (var block2 of content2) {
-                if (block2.type !== 'tool_result' || !block2.tool_use_id) continue;
-                var tid = block2.tool_use_id;
-                var existing = session.toolIndex.get(tid);
-                if (existing) {
-                  existing.hasResult = true;
-                } else {
-                  session.toolIndex.set(tid, {
-                    toolName: '',
-                    parentAgentID: '',
-                    hasResult: true,
-                  });
-                }
-              }
-            } catch { continue; }
-          }
+            }
+          } catch { continue; }
         }
-      } catch (err) {
-        if (this.debug) console.error('[watcher] _populateToolIndex error reading', filePath + ':', err.message);
       }
+    } catch (err) {
+      if (this.debug) console.error('[watcher] _populateToolIndex error reading', filePath + ':', err.message);
     }
-    session.toolIndexPopulated = true;
   }
 
   // =========================================================================
@@ -1087,7 +1141,9 @@ class Watcher extends EventEmitter {
               rawLine = rawLine.slice(0, -1);
             }
 
-            chunkBytes += Buffer.byteLength(rawLine, 'utf-8') + nlLen;
+            // Fast path: use rawLine.length for ASCII-only lines (1 byte per char).
+            // Only call Buffer.byteLength when multi-byte characters are detected.
+            chunkBytes += (/[^\x00-\x7F]/.test(rawLine) ? Buffer.byteLength(rawLine, 'utf-8') : rawLine.length) + nlLen;
 
             if (!rawLine.trim()) continue;
 
@@ -1251,22 +1307,38 @@ class Watcher extends EventEmitter {
 
 function createWalkDir(readdirFn) {
   const walk = async (dir, callback) => {
+    let entries;
     try {
-      const entries = await readdirFn(dir, { withFileTypes: true });
-      for (const entry of entries) {
-        const fullPath = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-          await walk(fullPath, callback);
-        } else {
-          let stats;
-          try { stats = await fsp.stat(fullPath); } catch { continue; }
-          callback(fullPath, stats);
-        }
-      }
+      entries = await readdirFn(dir, { withFileTypes: true });
     } catch (err) {
       if (err.code !== 'ENOENT' && err.code !== 'EACCES') {
         console.error(`[watcher] _walkDir error on ${dir}: ${err.message}`);
       }
+      return;
+    }
+
+    // Separate directories and files for parallel processing
+    const dirs = [];
+    const files = [];
+    for (const entry of entries) {
+      if (entry.isDirectory()) dirs.push(entry);
+      else files.push(entry);
+    }
+
+    // Stat all files in parallel
+    if (files.length > 0) {
+      const results = await Promise.all(files.map(async (entry) => {
+        const fullPath = path.join(dir, entry.name);
+        try { return { path: fullPath, stats: await fsp.stat(fullPath) }; } catch { return null; }
+      }));
+      for (const r of results) {
+        if (r) callback(r.path, r.stats);
+      }
+    }
+
+    // Recurse into subdirectories
+    for (const entry of dirs) {
+      await walk(path.join(dir, entry.name), callback);
     }
   };
   return walk;
@@ -1304,11 +1376,15 @@ async function _listSessionsFiltered(limit, activeWithin) {
     const basename = path.basename(c.filePath);
     const projectDir = path.basename(path.dirname(c.filePath));
     const projectPath = await resolveProjectPath(projectDir);
+    const observerInfo = await detectObserverSession(c.filePath);
 
     sessions.push({
       id: basename.replace(/\.jsonl$/, ''),
       path: c.filePath,
       projectPath,
+      realCwd: observerInfo.realCwd,
+      isObserver: observerInfo.isObserver,
+      observedRequest: observerInfo.observedRequest,
       modified: c.stats.mtime,
       birthtimeMs: c.stats.birthtimeMs,
       isActive: (now - c.stats.mtimeMs) < RecentActivityThreshold,

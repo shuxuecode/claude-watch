@@ -45,6 +45,8 @@ function getClaudeDir() {
 async function fullScanTokenUsage(progressCallback) {
   const claudeDir = getClaudeDir();
   const dailyStats = new Map();
+  // Hourly aggregation: 24-hour distribution of API calls (local timezone)
+  const hourlyStats = new Array(24).fill(0);
 
   // Collect all JSONL files (main + subagent)
   const jsonlFiles = [];
@@ -56,18 +58,21 @@ async function fullScanTokenUsage(progressCallback) {
 
   if (progressCallback) progressCallback(0, jsonlFiles.length);
 
-  // Process each file
-  for (let i = 0; i < jsonlFiles.length; i++) {
-    await scanOneFile(jsonlFiles[i], dailyStats);
-    if (progressCallback && (i % 50 === 0 || i === jsonlFiles.length - 1)) {
-      progressCallback(i + 1, jsonlFiles.length);
+  // Process files in concurrent batches for faster startup
+  const SCAN_BATCH_SIZE = 8;
+  for (let i = 0; i < jsonlFiles.length; i += SCAN_BATCH_SIZE) {
+    const batch = jsonlFiles.slice(i, i + SCAN_BATCH_SIZE);
+    await Promise.all(batch.map(f => scanOneFile(f, dailyStats, hourlyStats)));
+    const done = Math.min(i + SCAN_BATCH_SIZE, jsonlFiles.length);
+    if (progressCallback && (done % 50 < SCAN_BATCH_SIZE || done === jsonlFiles.length)) {
+      progressCallback(done, jsonlFiles.length);
     }
   }
 
-  return dailyStats;
+  return { dailyStats, hourlyStats };
 }
 
-async function scanOneFile(filePath, dailyStats) {
+async function scanOneFile(filePath, dailyStats, hourlyStats) {
   let input, rl;
   try {
     input = fs.createReadStream(filePath, { encoding: 'utf-8' });
@@ -92,16 +97,17 @@ async function scanOneFile(filePath, dailyStats) {
     const msg = raw.message;
     if (!msg) continue;
 
-    // Extract timestamp — required for date-based aggregation
+    // Extract timestamp — required for date-based and hour-based aggregation
     let ts;
     if (raw.timestamp) {
       ts = new Date(raw.timestamp);
     }
     if (!raw.timestamp || isNaN(ts.getTime())) {
-      // Skip lines without valid timestamps — can't determine which day they belong to
+      // Skip lines without valid timestamps — can't determine which day/hour they belong to
       continue;
     }
     const dateStr = ts.getFullYear() + '-' + String(ts.getMonth() + 1).padStart(2, '0') + '-' + String(ts.getDate()).padStart(2, '0');
+    const hour = ts.getHours();
 
     // Extract usage
     const usage = msg.usage;
@@ -126,6 +132,9 @@ async function scanOneFile(filePath, dailyStats) {
     day.output += outputTokens;
     day.cacheCreation += cacheCreationTokens;
     day.cacheRead += cacheReadTokens;
+
+    // Hourly distribution (API calls count)
+    hourlyStats[hour]++;
 
     // Per-model breakdown
     const model = (hasModel && msg.model && msg.model !== '<synthetic>') ? msg.model : '';

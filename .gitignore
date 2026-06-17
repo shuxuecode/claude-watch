@@ -3,6 +3,8 @@ node_modules/
 PROJECT.md
 .DS_Store
 coverage/
-tmp/
 .claude/
 .playwright-mcp/
+
+
+

@@ -1,5 +1,44 @@
 # Changelog
 
+## 2026-06-17
+
+### 新功能
+
+- Feature: Observer 会话识别与真实工作目录显示 — 解析 claude-mem observer 会话 JSONL 中的 `<observed_from_primary_session>` 内容，提取被观察主会话的真实 `<working_directory>` 和 `<user_request>`，在左侧树中显示为 `[Observer] {project}`，并在 hover tooltip 中展示完整路径和观察请求
+- Feature: `sessionDisplayName()` 统一显示名计算 — `public/js/shared.js` 新增共享函数，Observer 会话自动加 `[Observer]` 前缀，非 observer 会话保持原有优先级（title → folderName → ID 前缀），被 `stream.js` 和 `app.js` 共同使用
+
+### Bug 修复
+
+- Fix: Observer 会话被误解码为 `sessions` — 由于 `resolveProjectPath` 把目录名 `.claude-mem` 中的连字符误判为路径分隔符，且 observer 自身的 transcript 位于 `.../observer-sessions/`，导致树面板把 observer 会话显示为无意义的 `sessions`。现在优先使用从 transcript 提取的 `realCwd`，fallback 时才用 projectPath
+
+### 代码改动
+
+- `src/parser/parser.js`：新增 `StreamItemType.OBSERVER_META` 类型、`collectText()` 和 `extractObserverMeta()` 函数，支持从 `queue-operation` / `user` 消息中解析 observer 内容；`parseLine` 新增 `queue-operation` 分支
+- `src/watcher/watcher.js`：`Session` 类新增 `realCwd`、`isObserver`、`observedRequest` 字段；`buildSession` 首次扫描 transcript 识别 observer；`_listSessionsFiltered` / `newSession` 广播透传新字段
+- `src/server/server.js`：`/status` 和 WebSocket `snapshot` 返回 `realCwd`、`isObserver`、`observedRequest`
+- `public/js/stream.js`：`handleSnapshot` / `handleNewSession` 接收并存储 observer 字段；`handleItem` / `handleItemBatch` 动态应用 `observer_meta`；会话行 tooltip 显示完整路径和观察请求
+- `public/js/app.js`：顶部 session info 和导出弹窗项目名使用 `realCwd || projectPath`
+
+## 2026-06-15
+
+### 代码重构
+
+- Refactor: 前后端代码分离 — `index.html` 从 2879 行精简为 126 行纯 HTML 结构，内联 CSS 提取到 `css/app.css`，内联 JS 提取到 `js/app.js`
+- Refactor: 前端模块化拆分 — 单体 `app.js`（2275 行）拆分为 4 个职责单一的文件：
+  - `shared.js`（245 行）— 共享工具函数（LRUCache、esc、fmtTok 等）和共享状态（sessions、filters、contextData 等）
+  - `stream.js`（1076 行）— Stream 页面完整逻辑：树形面板、流式渲染、Markdown 渲染、过滤器、滚动检测、拖拽调整
+  - `token.js`（474 行）— Token 统计页面完整逻辑：热力图、趋势图、饼图、小时分布图、堆叠图、明细表
+  - `app.js`（470 行）— 协调器：WebSocket 连接与消息分发、主题切换、HTML 导出、Tab 切换
+
+### 新功能
+
+- Feature: Hash 路由 — Tab 切换同步更新 URL hash（`#stream`/`#tokens`），支持浏览器前进/后退、刷新保持当前 Tab、直接通过 URL 访问指定页面
+- Feature: Token 统计页面标题中文化 — 所有英文标题添加中文翻译，包括：总用量、输入/输出、缓存读取/创建、消息数、日平均、模型排名、使用趋势、活跃热力图、活跃时段分布、每日明细/每周/每月，以及表格表头和图表图例
+
+### Bug 修复
+
+- Fix: 直接访问 `#tokens` URL 时 Token 页面无数据 — `handleTokenStats` 收到 WebSocket 数据后检查当前是否在 Tokens Tab，如果是则自动触发 `renderTokenPage()`，解决数据到达时 Tab 已切换但未渲染的时序问题
+
 ## 2026-06-07
 
 ### 新功能
@@ -11,7 +50,7 @@
 
 ### Bug 修复
 
-- Fix: `resolveProjectPath` 未正确处理 Claude 路径编码中的 `--`（点号编码）— 旧代码 `split('-')` 将 `--` 拆为空元素导致 progressive join 产生含 `//` 的无效路径，fallback naive 转换把所有 `-` 替换为 `/` 产出错误路径如 `Users/eleme//claude/`，使得树面板对 `.claude` 等隐藏目录下的会话显示无意义名称（如 "sessions"、"skills"）。修复后采用三层策略：直接解码优先（`--→/.`, `-→/`）；渐进合并兜底（空元素合并为点前缀目录）；fallback 返回直接解码结果。
+- Fix: `resolveProjectPath` 未正确处理 Claude 路径编码中的 `--`（点号编码）— 旧代码 `split('-')` 将 `--` 拆为空元素导致 progressive join 产生含 `//` 的无效路径，fallback naive 转换把所有 `-` 替换为 `/` 产出错误路径如 `Users/claude/`，使得树面板对 `.claude` 等隐藏目录下的会话显示无意义名称（如 "sessions"、"skills"）。修复后采用三层策略：直接解码优先（`--→/.`, `-→/`）；渐进合并兜底（空元素合并为点前缀目录）；fallback 返回直接解码结果。
 
 ## 2026-05-28
 

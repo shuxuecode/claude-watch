@@ -17,6 +17,7 @@ var StreamItemType = {
   PR_LINK: 'pr_link',
   DEBUG: 'debug',
   SESSION_TITLE: 'session_title',
+  OBSERVER_META: 'observer_meta',
 };
 
 var AgentIDDisplayLength = 7;
@@ -91,6 +92,9 @@ function parseLine(line) {
       if (debugAll && items.length === 0) {
         items.push(debugItem(raw, line, timestamp));
       }
+      break;
+    case 'queue-operation':
+      items.push(...extractObserverMeta(raw, timestamp));
       break;
     case 'pr-link':
       items.push(...parsePRLink(raw, timestamp));
@@ -379,6 +383,37 @@ function parseAssistantMessage(raw, timestamp) {
 }
 
 // ============================================================================
+// Observer Metadata Extraction
+// ============================================================================
+
+function collectText(value, depth) {
+  depth = depth || 0;
+  if (depth > 6) return '';
+  if (typeof value === 'string') return value;
+  if (!value) return '';
+  if (Array.isArray(value)) return value.map(v => collectText(v, depth + 1)).join('\n');
+  return collectText(value.text || value.content || '', depth + 1);
+}
+
+function extractObserverMeta(raw, timestamp) {
+  const source = raw.message || raw;
+  const text = collectText(source.content || source.text || raw.content || '');
+  if (!text || !text.includes('<observed_from_primary_session>')) return [];
+  const cwdMatch = text.match(/<working_directory>([^<]*)<\/working_directory>/);
+  const reqMatch = text.match(/<user_request>([^<]*)<\/user_request>/);
+  const realCwd = cwdMatch ? cwdMatch[1].trim() : '';
+  const observedRequest = reqMatch ? reqMatch[1].trim() : '';
+  if (!realCwd && !observedRequest) return [];
+  return [makeItem({
+    type: StreamItemType.OBSERVER_META,
+    sessionID: raw.sessionId || raw.sessionID || '',
+    realCwd,
+    observedRequest,
+    timestamp,
+  })];
+}
+
+// ============================================================================
 // User Messages
 // ============================================================================
 
@@ -442,6 +477,8 @@ function parseUserMessage(raw, timestamp) {
       }
     }
   }
+
+  items.push(...extractObserverMeta(raw, timestamp));
 
   return items;
 }
