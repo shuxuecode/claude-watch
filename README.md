@@ -1,5 +1,7 @@
 # claude-watch
 
+**English | [简体中文](README.zh-CN.md)**
+
 > Stream Claude Code's hidden output (thinking, tool calls, subagents) to a web browser in real-time.
 
 Claude Code writes detailed JSONL logs under `~/.claude/projects/` as it works — including thinking blocks, tool inputs/outputs, subagent activity, and token usage. `claude-watch` tails those logs and streams everything to a local web dashboard, so you can see exactly what Claude Code is doing under the hood.
