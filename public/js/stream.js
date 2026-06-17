@@ -323,8 +323,13 @@ function rebuildNodes() {
 
   const flatSessions = [];
   const olderByDate = new Map();
+  const observerSessions = [];
 
   for (const s of sessions) {
+    if (s.isObserver) {
+      observerSessions.push(s);
+      continue;
+    }
     const dateStr = s.birthtimeMs ? formatTime(s.birthtimeMs).split(' ')[0] : null;
     if (!dateStr || dateStr === todayStr || isSessionActive(s)) {
       flatSessions.push(s);
@@ -380,6 +385,21 @@ function rebuildNodes() {
   }
 
   const sortedDates = [...olderByDate.keys()].sort((a, b) => b.localeCompare(a));
+
+  // Observer folder: aggregate all isObserver sessions
+  const observerCollapsed = folderCollapsed['__observer__'] !== false;
+  if (observerSessions.length > 0) {
+    treeNodes.push({
+      type: 'observer-folder', date: '__observer__', level: 0, isLast: false,
+      collapsed: observerCollapsed, sessionCount: observerSessions.length,
+    });
+    if (!observerCollapsed) {
+      for (const s of observerSessions) {
+        addSessionWithChildren(s, true);
+      }
+    }
+  }
+
   for (let di = 0; di < sortedDates.length; di++) {
     const dateStr = sortedDates[di];
     const folderSessions = olderByDate.get(dateStr);
@@ -397,6 +417,18 @@ function rebuildNodes() {
 
   const flatSessionNodes = treeNodes.filter(n => n.type === 'session' && !n.inFolder);
   if (flatSessionNodes.length > 0) flatSessionNodes[flatSessionNodes.length - 1].isLast = true;
+
+  // Mark last session inside Observer folder
+  if (observerSessions.length > 0 && folderCollapsed['__observer__'] !== false) {
+    const thisFolder = [];
+    let inThisFolder = false;
+    for (const n of treeNodes) {
+      if (n.type === 'observer-folder') { inThisFolder = true; continue; }
+      if (n.type === 'observer-folder' || n.type === 'date-folder') { inThisFolder = false; continue; }
+      if (inThisFolder && n.type === 'session') thisFolder.push(n);
+    }
+    if (thisFolder.length > 0) thisFolder[thisFolder.length - 1].isLast = true;
+  }
 
   for (const dateStr of sortedDates) {
     if (folderCollapsed[dateStr] !== false) continue;
@@ -429,12 +461,13 @@ function getNodeHTML(node, idx) {
   const isSelected = idx === treeCursor;
   const selClass = isSelected ? ' selected' : '';
 
-  if (node.type === 'date-folder') {
+  if (node.type === 'date-folder' || node.type === 'observer-folder') {
+    const label = node.type === 'observer-folder' ? 'Observer' : node.date;
     const icon = node.collapsed ? '▸' : '▾';
     return `<div class="tree-row tree-row-folder${selClass ? ' selected' : ''}">
       <div class="tree-content" onclick="treeClick(${idx})" data-idx="${idx}">
         <div class="tree-node folder-node">
-          ${icon} 📁 ${node.date} <span style="font-size:10px;color:var(--dim);margin-left:4px">(${node.sessionCount})</span>
+          ${icon} 📁 ${esc(label)} <span style="font-size:10px;color:var(--dim);margin-left:4px">(${node.sessionCount})</span>
         </div>
       </div>
     </div>`;
@@ -830,9 +863,10 @@ function treeClick(idx) {
   selectIndex(idx);
   const node = treeNodes[idx];
   if (!node) return;
-  if (node.type === 'date-folder') {
+  if (node.type === 'date-folder' || node.type === 'observer-folder') {
     node.collapsed = !node.collapsed;
-    folderCollapsed[node.date] = node.collapsed;
+    const key = node.type === 'observer-folder' ? '__observer__' : node.date;
+    folderCollapsed[key] = node.collapsed;
     rebuildNodes();
   } else if (node.type === 'session') {
     const session = sessions.find(s => s.id === node.id);

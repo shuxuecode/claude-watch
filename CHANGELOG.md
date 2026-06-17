@@ -6,6 +6,7 @@
 
 - Feature: Observer 会话识别与真实工作目录显示 — 解析 claude-mem observer 会话 JSONL 中的 `<observed_from_primary_session>` 内容，提取被观察主会话的真实 `<working_directory>` 和 `<user_request>`，在左侧树中显示为 `[Observer] {project}`，并在 hover tooltip 中展示完整路径和观察请求
 - Feature: `sessionDisplayName()` 统一显示名计算 — `public/js/shared.js` 新增共享函数，Observer 会话自动加 `[Observer]` 前缀，非 observer 会话保持原有优先级（title → folderName → ID 前缀），被 `stream.js` 和 `app.js` 共同使用
+- Feature: 左侧树新增 Observer 虚拟文件夹 — 所有 `isObserver=true` 的会话聚合在名为 **Observer** 的文件夹下，支持展开/折叠，不影响原有日期分组与 flat 会话
 
 ### Bug 修复
 
@@ -16,7 +17,7 @@
 - `src/parser/parser.js`：新增 `StreamItemType.OBSERVER_META` 类型、`collectText()` 和 `extractObserverMeta()` 函数，支持从 `queue-operation` / `user` 消息中解析 observer 内容；`parseLine` 新增 `queue-operation` 分支
 - `src/watcher/watcher.js`：`Session` 类新增 `realCwd`、`isObserver`、`observedRequest` 字段；`buildSession` 首次扫描 transcript 识别 observer；`_listSessionsFiltered` / `newSession` 广播透传新字段
 - `src/server/server.js`：`/status` 和 WebSocket `snapshot` 返回 `realCwd`、`isObserver`、`observedRequest`
-- `public/js/stream.js`：`handleSnapshot` / `handleNewSession` 接收并存储 observer 字段；`handleItem` / `handleItemBatch` 动态应用 `observer_meta`；会话行 tooltip 显示完整路径和观察请求
+- `public/js/stream.js`：`handleSnapshot` / `handleNewSession` 接收并存储 observer 字段；`handleItem` / `handleItemBatch` 动态应用 `observer_meta`；会话行 tooltip 显示完整路径和观察请求；`rebuildNodes()` / `getNodeHTML()` / `treeClick()` 新增 `observer-folder` 虚拟文件夹，聚合所有 Observer 会话
 - `public/js/app.js`：顶部 session info 和导出弹窗项目名使用 `realCwd || projectPath`
 
 ## 2026-06-15
