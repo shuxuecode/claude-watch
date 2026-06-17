@@ -5,6 +5,8 @@
 Claude Code writes detailed JSONL logs under `~/.claude/projects/` as it works — including thinking blocks, tool inputs/outputs, subagent activity, and token usage. `claude-watch` tails those logs and streams everything to a local web dashboard, so you can see exactly what Claude Code is doing under the hood.
 
 ![](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen)
+![](https://img.shields.io/github/package-json/dependency-version/shuxuecode/claude-watch/chokidar)
+![](https://img.shields.io/github/package-json/dependency-version/shuxuecode/claude-watch/ws)
 
 **English | [简体中文](README.zh-CN.md)**
 

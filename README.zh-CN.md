@@ -2,6 +2,10 @@
 
 claude-code-watch — 一个 Claude Code 的实时 Web 监控仪表盘。短命令 `cc-watch`。
 
+![](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen)
+![](https://img.shields.io/github/package-json/dependency-version/shuxuecode/claude-watch/chokidar)
+![](https://img.shields.io/github/package-json/dependency-version/shuxuecode/claude-watch/ws)
+
 **[English](README.md) | 简体中文**
 
 ## 核心作用
